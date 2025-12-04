@@ -7,12 +7,17 @@
 */
 
 #include "FileUtils.h"
+#include <iostream>
 
 int main() {
     
     FileUtils file; 
 
-    file.readFrame(1);
+    std::vector<float> frame = file.readFrame(1);
+
+    std::cout << frame[0] << "," << frame[1] << "," << frame[2] << std::endl << std::endl; 
+
+    std::cout << file << std::endl;
 
     return 0;
 }

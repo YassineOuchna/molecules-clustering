@@ -24,31 +24,50 @@ FileUtils::FileUtils()
 size_t FileUtils::getN_atoms() const { return n_atoms; }
 size_t FileUtils::getN_frames() const { return n_frames; }
 size_t FileUtils::getN_dims() const { return n_dims; }
+std::ifstream& FileUtils::getFile() const { return const_cast<std::ifstream&>(file); }
 
-std::string FileUtils::toString() {
-    return "UwU";
-}
-
-void FileUtils::readFrame(size_t frame_idx) {
-    if (frame_idx >= n_frames) {
-        throw std::out_of_range("Frame index out of range");
-    }
+std::ostream& operator<<(std::ostream& os, const FileUtils& f) {
+    size_t n_atoms = f.getN_atoms();
+    size_t n_dims = f.getN_dims();
+    size_t n_frames = f.getN_frames();
+    std::ifstream& file = f.getFile();
 
     std::vector<float> frame_data(n_atoms * n_dims);
-
-    file.seekg(3 * sizeof(size_t) + frame_idx * n_atoms * n_dims * sizeof(float), std::ios::beg);
+    file.seekg(3 * sizeof(size_t) + 0 * n_atoms * n_dims * sizeof(float), std::ios::beg);
+    file.read(reinterpret_cast<char*>(frame_data.data()), n_atoms * n_dims * sizeof(float));
+    
+    os << "Snapshot 1:" << std::endl
+       << "Atom 1: (" << frame_data[0 * n_dims + 0] << ", " << frame_data[0 * n_dims + 1] << ", " << frame_data[0 * n_dims + 2] << ")" << std::endl
+       << "Atom 2: (" << frame_data[1 * n_dims + 0] << ", " << frame_data[1 * n_dims + 1] << ", " << frame_data[1 * n_dims + 2] << ")" << std::endl
+       << "..." << std::endl
+       << "Atom " << n_atoms << ": (" << frame_data[(n_atoms-1) * n_dims + 0] << ", " << frame_data[(n_atoms-1) * n_dims + 1] << ", " << frame_data[(n_atoms-1) * n_dims + 2] << ")" << std::endl << std::endl;
+    
+    file.seekg(3 * sizeof(size_t) + 1 * n_atoms * n_dims * sizeof(float), std::ios::beg);
     file.read(reinterpret_cast<char*>(frame_data.data()), n_atoms * n_dims * sizeof(float));
 
-    if (!file) {
-        throw std::runtime_error("Error reading frame " + std::to_string(frame_idx));
-    }
+    os << "Snapshot 2:" << std::endl
+       << "Atom 1: (" << frame_data[0 * n_dims + 0] << ", " << frame_data[0 * n_dims + 1] << ", " << frame_data[0 * n_dims + 2] << ")" << std::endl
+       << "Atom 2: (" << frame_data[1 * n_dims + 0] << ", " << frame_data[1 * n_dims + 1] << ", " << frame_data[1 * n_dims + 2] << ")" << std::endl
+       << "..." << std::endl
+       << "Atom " << n_atoms << ": (" << frame_data[(n_atoms-1) * n_dims + 0] << ", " << frame_data[(n_atoms-1) * n_dims + 1] << ", " << frame_data[(n_atoms-1) * n_dims + 2] << ")" << std::endl << std::endl;
+    os << "..." << std::endl << std::endl;
 
-    for (size_t atom_idx = 0; atom_idx < 10 && atom_idx < n_atoms; atom_idx++) {
-        double x = frame_data[atom_idx * n_dims + 0];
-        double y = frame_data[atom_idx * n_dims + 1];
-        double z = frame_data[atom_idx * n_dims + 2];
+    file.seekg(3 * sizeof(size_t) + n_frames * n_atoms * n_dims * sizeof(float), std::ios::beg);
+    file.read(reinterpret_cast<char*>(frame_data.data()), n_atoms * n_dims * sizeof(float));
 
-        std::cout << "Atom " << atom_idx + 1 << ": (" 
-                  << x << ", " << y << ", " << z << ")\n";
-    }
+    os << "Snapshot " << n_frames << ":" << std::endl
+       << "Atom 1: (" << frame_data[0 * n_dims + 0] << ", " << frame_data[0 * n_dims + 1] << ", " << frame_data[0 * n_dims + 2] << ")" << std::endl
+       << "Atom 2: (" << frame_data[1 * n_dims + 0] << ", " << frame_data[1 * n_dims + 1] << ", " << frame_data[1 * n_dims + 2] << ")" << std::endl
+       << "..." << std::endl
+       << "Atom " << n_atoms << ": (" << frame_data[(n_atoms-1) * n_dims + 0] << ", " << frame_data[(n_atoms-1) * n_dims + 1] << ", " << frame_data[(n_atoms-1) * n_dims + 2] << ")";
+    return os;
+}
+
+std::vector<float> FileUtils::readFrame(size_t frame_idx) {
+
+    std::vector<float> frame_data(n_atoms * n_dims);
+    file.seekg(3 * sizeof(size_t) + 0 * n_atoms * n_dims * sizeof(float), std::ios::beg);
+    file.read(reinterpret_cast<char*>(frame_data.data()), n_atoms * n_dims * sizeof(float));
+
+    return frame_data;
 }
