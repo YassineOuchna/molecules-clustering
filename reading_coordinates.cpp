@@ -1,6 +1,12 @@
 /*
     Compile with:
-    g++ -std=c++11 -O3 reading_coordinates.cpp FileUtils.cpp -lchemfiles -o reading_coordinates
+    nvcc -ccbin /usr/bin/g++-12 -std=c++11 -O3 \
+    reading_coordinates.cpp FileUtils.cpp gpu.cu \
+    -I/usr/local/cuda/include \
+    -L/usr/local/cuda/lib64 -lcudart \
+    -lchemfiles \
+    -o reading_coordinates
+
 
     Run:
     ./reading_coordinates
