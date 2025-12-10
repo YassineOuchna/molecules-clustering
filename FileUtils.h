@@ -26,6 +26,7 @@ public:
     std::ifstream& getFile() const;
     std::vector<float> readFrame(size_t frame_idx);
     float* loadData(size_t n_subset_frames);
+    void reorderByLine(float* frame_data, const size_t n_subset_frames);
 };
 
 #endif

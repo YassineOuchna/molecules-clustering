@@ -3,6 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+#include <string.h>
 
 FileUtils::FileUtils() 
     : file("output/snapshots_coords.bin", std::ios::binary) 
@@ -73,6 +74,30 @@ std::vector<float> FileUtils::readFrame(size_t frame_idx) {
 }
 
 /*
+* Reorders a flat frame_data array from
+* (N * n * 3) to (N * 3 * n)
+*/
+void FileUtils::reorderByLine(float* frame_data, const size_t n_subset_frames) {
+
+    // buffer
+    std::vector<float> tmp(3 * n_atoms);
+
+    for (size_t frame_idx = 0; frame_idx < n_subset_frames; frame_idx++){
+        float* base = frame_data + frame_idx * n_atoms * 3;
+
+        // copy original (N * n * 3) block
+        memcpy(tmp.data(), base, 3 * n_atoms * sizeof(float));
+
+        // now write in (N * 3 * n) order
+        for (size_t a = 0; a < n_atoms; ++a) {
+            base[a]             = tmp[3 * a + 0];
+            base[a + n_atoms]   = tmp[3 * a + 1];
+            base[a + 2*n_atoms] = tmp[3 * a + 2];
+        }
+    }
+}
+
+/*
 * Loads n_subset_frames (*52 Kbytes) data into memory (RAM) 
 * must be <= n_frames which is the total
 * number of frames in the file.
@@ -101,7 +126,7 @@ float* FileUtils::loadData(size_t n_subset_frames) {
     // extract data
     file.read(reinterpret_cast<char*>(data), data_size_bytes);
 
-    std::cout << "Loaded " << data_size_bytes / (1000*1000) << " Mb" << std::endl;
+    std::cout << "Successfully Loaded " << data_size_bytes / (1000*1000) << " Mb" << std::endl;
 
     return data;
 }

@@ -8,20 +8,19 @@ GPUCC = nvcc
 # CUDA_TARGET_FLAGS = -arch=sm_86      # RTX 3080
 
 # Compiler flags
-# CXXFLAGS = -DDP -I. -I./lib -I/usr/local/cuda/include -I/usr/include/x86_64-linux-gnu
+CXXFLAGS = -DDP -I. -I./lib -I/usr/local/cuda/include -I/usr/include/x86_64-linux-gnu
 
-CXXFLAGS = -Ofast -I./chemfiles/include -I./chemfiles/build/include 
+CXXFLAGS += -O3 -I./chemfiles/include -I./chemfiles/build/include 
 CUDA_CXXFLAGS = -O3 $(CUDA_TARGET_FLAGS)
 
 # Linker flags
 CC_LDFLAGS = -L./chemfiles/build -lchemfiles
-# CUDA_LDFLAGS = -L/usr/local/cuda/lib64
-# CUDA_LIBS = -lcudart -lcuda
+CUDA_LDFLAGS = -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu
+CUDA_LIBS = -lcudart
 
 # Source files
-# CC_SOURCES = md_reader.cpp FileUtils.cpp reading_coordinates.cpp
 CC_SOURCES = reading_coordinates.cpp FileUtils.cpp
-# CUDA_SOURCES = gpu.cu
+CUDA_SOURCES = gpu.cu
 
 # Chemfiles lib
 CHEMFILES_GIT = https://github.com/chemfiles/chemfiles
@@ -52,9 +51,10 @@ $(OBJECT_DIR)/%.o: %.cpp
 	$(CPUCC) -c $< $(CXXFLAGS) -o $@
 
 # GPU Compilation Rule
-# $(OBJECT_DIR)/%.o: %.cu
-# 	@mkdir -p $(dir $@)
-# 	$(GPUCC) -c $< $(CXXFLAGS) $(CUDA_CXXFLAGS) -o $@
+$(OBJECT_DIR)/%.o: %.cu
+	@mkdir -p $(dir $@)
+	$(GPUCC) -c $< $(CUDA_CXXFLAGS) -Xcompiler "$(CXXFLAGS)" -o $@
+
 
 # Chemfiles build rule
 $(CHEMFILES_BUILD_DIR)/libchemfiles.a:
