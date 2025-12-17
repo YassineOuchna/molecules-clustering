@@ -36,53 +36,103 @@ void pickRandomCentroids(int N_frames, int K, int* centroids) {
     delete[] indices;
 }
 
-void createClusters(int N_frames, int K, float* rmsdHost, std::vector<int> cluster)
-{
-    for (size_t i = 0; i < N_frames; i++) {
-        float min_rmsd = 1e30f;
-        int min_k = -1;
+void createClusters(
+    int N_frames,
+    int K,
+    const float* rmsd,
+    const int* centroids,
+    int* clusters
+) {
+    for (int i = 0; i < N_frames; i++) {
+        float best = 1e30f;
+        int best_k = -1;
+
         for (int k = 0; k < K; k++) {
-            float d = rmsdHost[k * N_frames + i];
-            if (d < min_rmsd) {
-                min_rmsd = d;
-                min_k = k;
+            float d = rmsd[centroids[k] * N_frames + i];
+            if (d < best) {
+                best = d;
+                best_k = k;
             }
         }
-        cluster[i] = min_k;
+        clusters[i] = best_k;
     }
 }
 
-void updateCentroids(int N_frames, int K, const std::vector<int>& cluster, float* rmsdHost, int* centroids)
-{
+
+
+void updateCentroids(
+    int N_frames,
+    int K,
+    const int* clusters,
+    const float* rmsdHost,
+    int* centroids
+) {
     for (int k = 0; k < K; k++) {
-        float best_sum = 1e30f;
+        float best_cost = 1e30f;
         int best_idx = -1;
 
-        // Consider all frames in this cluster
-        for (size_t i = 0; i < N_frames; i++) {
-            if (cluster[i] != k) continue;
+        for (int i = 0; i < N_frames; i++) {
+            if (clusters[i] != k) continue;
 
-            // Sum RMSD of frame i to all other frames in the cluster
-            float sum_rmsd = 0.0f;
-            for (size_t j = 0; j < N_frames; j++) {
-                if ((cluster[j] != k) || (j == centroids[k])) continue;
-
-                // RMSD of frame i to frame j
-                // Approximate using RMSD of j to centroid i
-                sum_rmsd += rmsdHost[i + k * N_frames]; 
+            float cost = 0.0f;
+            for (int j = 0; j < N_frames; j++) {
+                if (clusters[j] != k) continue;
+                cost += rmsdHost[i * N_frames + j];
             }
 
-            if (sum_rmsd < best_sum) {
-                best_sum = sum_rmsd;
+            if (cost < best_cost) {
+                best_cost = cost;
                 best_idx = i;
             }
         }
 
-        // Update centroid for cluster k
-        if (best_idx != -1) {
+        if (best_idx != -1)
             centroids[k] = best_idx;
-        }
     }
+}
+
+float daviesBouldinIndex(
+    int N_frames,
+    int K,
+    const int* clusters,
+    const int* centroids,
+    const float* rmsd
+) {
+    std::vector<float> S(K, 0.0f);
+    std::vector<int> counts(K, 0);
+
+    // --- Compute S_i (intra-cluster scatter)
+    for (int i = 0; i < N_frames; i++) {
+        int k = clusters[i];
+        S[k] += rmsd[centroids[k] * N_frames + i];
+        counts[k]++;
+    }
+
+    for (int k = 0; k < K; k++) {
+        if (counts[k] > 0)
+            S[k] /= counts[k];
+    }
+
+    // --- Compute DB
+    float db = 0.0f;
+
+    for (int i = 0; i < K; i++) {
+        float maxR = 0.0f;
+
+        for (int j = 0; j < K; j++) {
+            if (i == j) continue;
+
+            float Mij = rmsd[centroids[i] * N_frames + centroids[j]];
+            if (Mij > 0.0f) {
+                float Rij = (S[i] + S[j]) / Mij;
+                maxR = std::max(maxR, Rij);
+            }
+        }
+
+        db += maxR;
+    }
+
+    return db / K;
 }
 
 int main() {
@@ -94,7 +144,7 @@ int main() {
 
     std::cout << file << std::endl;
 
-    size_t N_frames = file.getN_frames();
+    size_t N_frames = 5000;
     size_t N_atoms  = file.getN_atoms();
     size_t N_dims   = file.getN_dims();
 
@@ -111,53 +161,69 @@ int main() {
 
     // Load RMSD tab
     float* rmsd;
-    size_t size_rmsd = N_frames * sizeof(float) * K;
+    size_t size_rmsd = N_frames * N_frames * sizeof(float);
     cudaMalloc(&rmsd, size_rmsd);
+
+    dim3 threads(256);
+    dim3 blocks((N_frames + threads.x - 1.0f) / threads.x);
+
+    std::cout << "Kernel Start" << std::endl;
+    for (int i=0; i<N_frames; i++) {
+        RMSD<<<blocks, threads>>>(
+        frameGPU,
+        N_frames,
+        N_atoms,
+        i,
+        rmsd
+    );
+    }
+    cudaDeviceSynchronize();
+    std::cout << "Kernel Finished" << std::endl;
+    float* rmsdHost = new float[N_frames*N_frames];
+    cudaMemcpy(rmsdHost, rmsd, size_rmsd, cudaMemcpyDeviceToHost);
 
     // Pick first K unique indices
     int* centroids = new int[K];
     pickRandomCentroids(N_frames, K, centroids);
-    
-
-    int threads = 256;
-    int blocks = (N_frames + threads - 1) / threads;
-
-    float* rmsdHost = new float[N_frames * K];
+    int* clusters = new int[N_frames];
 
     // LOOP STARTS HERE
     for (int i=0; i<MAX_ITER; i++) {
-        for (int k = 0; k<K; k++) {
-            RMSD<<<blocks, threads>>>(
-                frameGPU,   // reordered coordinates
-                N_frames,
-                N_atoms,
-                centroids[k],
-                k,
-                rmsd
-            );
-        }
-        cudaDeviceSynchronize();
-
-        cudaMemcpy(rmsdHost, rmsd, size_rmsd, cudaMemcpyDeviceToHost);
-        std::cout << "Iteration " << i+1 << std::endl;
-        for (int k=0; k<K; k++) {
-            for(int i=0; i<3; i++) {
-                std::cout << "RMSD between " << centroids[k] << " and " << i << " is " << rmsdHost[k*N_frames + i] << std::endl;
-            }
-        }
+        // std::cout << "Iteration " << i+1 << std::endl;
+        // for (int k=0; k<K; k++) {
+        //     for(int i=0; i<3; i++) {
+        //         std::cout << "RMSD between " << centroids[k] << " and " << i << " is " << rmsdHost[centroids[k]*N_frames + i] << std::endl;
+        //     }
+        // }
 
         // Affecting molecules to the different centroids based on rmsd
-        std::vector<int> cluster(N_frames, -1);
-        createClusters(N_frames, K, rmsdHost, cluster);
+        createClusters(N_frames, K, rmsdHost, centroids, clusters);
 
         // Define new centroids
-        updateCentroids(N_frames, K, cluster, rmsdHost, centroids);
+        updateCentroids(N_frames, K, clusters, rmsdHost, centroids);
     }
+
+    std::cout << "Centroid: " << std::endl;
+    for (int i=0; i<K; i++) {
+        std::cout << centroids[i] << std::endl;
+    }
+
+    float db = daviesBouldinIndex(
+        N_frames,
+        K,
+        clusters,
+        centroids,
+        rmsdHost
+    );
+
+    std::cout << "Davies–Bouldin index: " << db << std::endl;
+
 
     // Cleanup
     delete[] frame;
     delete[] centroids;
     delete[] rmsdHost;
+    delete[] clusters;
     cudaFree(frameGPU);
     cudaFree(rmsd);
 

@@ -27,7 +27,6 @@ void RMSD(
     int N_frames,
     int N_atoms,
     int ref_idx,
-    int k,
     float*out
 );
 

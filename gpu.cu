@@ -111,18 +111,19 @@ void RMSD(
     int N_frames,
     int N_atoms,
     int ref_idx,
-    int k,
     float* out
 )
 {
     int snap = blockIdx.x * blockDim.x + threadIdx.x;
-    if (snap >= N_frames)
-        // Thread out of range, does nothing or RMSD with itself
+    if (snap >= N_frames || ref_idx > N_frames)
+        // Thread out of range, does nothing
         return;
     if (snap == ref_idx) {
-        out[k * N_frames + snap] = 0.0f;
+        //  RMSD with itself
+        out[ref_idx * N_frames + snap] = 0.0f;
         return;
     }
+
 
     // Offset entre 2 bloques de coordonnées x y z
     int block = N_atoms * N_frames;
@@ -315,5 +316,5 @@ void RMSD(
     
     float rmsd = sqrtf(sum_squared_dist / N_atoms);
 
-    out[k * N_frames + snap] = rmsd;
+    out[ref_idx * N_frames + snap] = rmsd;
 }
