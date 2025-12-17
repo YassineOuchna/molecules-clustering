@@ -21,45 +21,38 @@ void compute_eigenvector(float m00, float m01, float m02,
     float a21 = m12;
     float a22 = m22 - lambda;
 
-    // Set x3 = 1 and solve the 2x2 system for x1 and x2:
-    // a00*x1 + a01*x2 = -a02
-    // a10*x1 + a11*x2 = -a12
-
     float b0 = -a02;
     float b1 = -a12;
     float det = a00 * a11 - a01 * a10;
 
+    // z = 1 and solve by inversing the resulting system
     if (fabsf(det) > 1e-8f) {
         v[0] = (b0 * a11 - b1 * a01) / det;
         v[1] = (a00 * b1 - a10 * b0) / det;
         v[2] = 1.0f;
     } else {
-        // Try x2 = 1, solve for x1 and x3:
-        // a00*x1 + a02*x3 = -a01
-        // a20*x1 + a22*x3 = -a21
         
         b0 = -a01;
         b1 = -a21;
         det = a00 * a22 - a02 * a20;
         
+        // y = 1 and solve by inversing the resulting system
         if (fabsf(det) > 1e-8f) {
             v[0] = (b0 * a22 - b1 * a02) / det;
             v[1] = 1.0f;
             v[2] = (a00 * b1 - a20 * b0) / det;
         } else {
-            // Try x1 = 1, solve for x2 and x3:
-            // a01*x2 + a02*x3 = -a00
-            // a11*x2 + a12*x3 = -a10
-            
             b0 = -a00;
             b1 = -a10;
             det = a01 * a12 - a02 * a11;
             
+            // x = 1 and solve by inversing the resulting system
             if (fabsf(det) > 1e-8f) {
                 v[0] = 1.0f;
                 v[1] = (b0 * a12 - b1 * a02) / det;
                 v[2] = (a01 * b1 - a11 * b0) / det;
             } else {
+                // Fallback
                 v[0] = 1.0f;
                 v[1] = 0.0f;
                 v[2] = 0.0f;
@@ -76,10 +69,44 @@ void compute_eigenvector(float m00, float m01, float m02,
     }
 }
 
+// Robust eigenvalue solver using iterative method
+__device__
+void compute_eigenvalues_symmetric_3x3(float m00, float m01, float m02,
+                                       float m11, float m12, float m22,
+                                       float* lambda)
+{
+    // Compute coefficients of characteristic polynomial aλ^3 + bλ^2 + cλ + d
+    float a = -1.0f;
+    // Tr(M)
+    float b = m00 + m11 + m22;
+    // - 0.5 * (Tr(M)^2 - Tr(M^2))
+    float c = - 0.5f * ( b*b - (m00*m00 + m11*m11 + m22*m22 + 2.0f*(m01*m01 + m02*m02 + m12*m12)));
+    // det(M)
+    float d = m00*m11*m22 + 2.0f*m01*m02*m12 - m02*m02*m11 - m01*m01*m22 - m12*m12*m00;
+
+    // Using Cardano's formula to find eigenvalues
+    float p = (3.0f*a*c - b*b) / (3.0f * a * a);
+    float r = std::pow(- (p/3.0f), 3.0f/2.0f);
+    float q = ((27.0f * a * a * d) - (9.0f * a * b * c) + (2.0f * b * b * b)) / (27.0f * a * a * a);
+    // Ensure in [-1, 1]
+    float cosarg = -q / (2.0f * r);
+    cosarg = fminf(1.0f, fmaxf(-1.0f, cosarg));
+    float theta = (1.0f/3.0f) * acosf(cosarg);
+
+
+    lambda[0] = 2.0f * std::pow(r, 1.0f/3.0f) * cosf(theta) - ( b / (3.0f * a) );
+    lambda[1] = 2.0f * std::pow(r, 1.0f/3.0f) * cosf(theta + (2.0f * M_PI / 3.0f)) - ( b / (3.0f * a) );
+    lambda[2] = 2.0f * std::pow(r, 1.0f/3.0f) * cosf(theta + (4.0f * M_PI / 3.0f)) - ( b / (3.0f * a) );
+    
+    // Sort eigenvalues in descending order
+    if (lambda[0] < lambda[1]) { float tmp = lambda[0]; lambda[0] = lambda[1]; lambda[1] = tmp; }
+    if (lambda[1] < lambda[2]) { float tmp = lambda[1]; lambda[1] = lambda[2]; lambda[2] = tmp; }
+    if (lambda[0] < lambda[1]) { float tmp = lambda[0]; lambda[0] = lambda[1]; lambda[1] = tmp; }
+}
+
 __global__
-void computeA(
+void RMSD(
     const float* __restrict__ dst,   // reordered: [X-block | Y-block | Z-block]
-    float* __restrict__ outA,
     int N_frames,
     int N_atoms,
     int ref_idx
@@ -87,11 +114,45 @@ void computeA(
 {
     int snap = blockIdx.x * blockDim.x + threadIdx.x;
     if (snap >= N_frames || snap == ref_idx)
+        // Thread out of range, does nothing
         return;
 
-    int block = N_atoms * N_frames;   // size of one coord block
+    // Offset entre 2 bloques de coordonnées x y z
+    int block = N_atoms * N_frames;
 
-    // 3×3 accumulator
+    // STEP 0: Compute center to center the molecules coordinates
+    float centroid_X_x = 0.0f, centroid_X_y = 0.0f, centroid_X_z = 0.0f;
+    float centroid_Y_x = 0.0f, centroid_Y_y = 0.0f, centroid_Y_z = 0.0f;
+
+    for (int a = 0; a < N_atoms; ++a)
+    {
+        int xr = 0*block + a*N_frames + ref_idx;
+        int yr = 1*block + a*N_frames + ref_idx;
+        int zr = 2*block + a*N_frames + ref_idx;
+
+        int xs = 0*block + a*N_frames + snap;
+        int ys = 1*block + a*N_frames + snap;
+        int zs = 2*block + a*N_frames + snap;
+
+        centroid_X_x += dst[xr];
+        centroid_X_y += dst[yr];
+        centroid_X_z += dst[zr];
+
+        centroid_Y_x += dst[xs];
+        centroid_Y_y += dst[ys];
+        centroid_Y_z += dst[zs];
+    }
+
+    centroid_X_x /= N_atoms;
+    centroid_X_y /= N_atoms;
+    centroid_X_z /= N_atoms;
+
+    centroid_Y_x /= N_atoms;
+    centroid_Y_y /= N_atoms;
+    centroid_Y_z /= N_atoms;
+
+    // STEP 1: Build correlation matrix A = (X-centroid_X)^T * (Y-centroid_Y)
+    // 3×3 accumulator for A = X_centered * Y_centered^T
     float a00=0, a01=0, a02=0;
     float a10=0, a11=0, a12=0;
     float a20=0, a21=0, a22=0;
@@ -106,20 +167,22 @@ void computeA(
         int ys = 1*block + a*N_frames + snap;
         int zs = 2*block + a*N_frames + snap;
 
-        float Xx = dst[xr];
-        float Xy = dst[yr];
-        float Xz = dst[zr];
+        // Center the coordinates
+        float Xx = dst[xr] - centroid_X_x;
+        float Xy = dst[yr] - centroid_X_y;
+        float Xz = dst[zr] - centroid_X_z;
 
-        float Yx = dst[xs];
-        float Yy = dst[ys];
-        float Yz = dst[zs];
+        float Yx = dst[xs] - centroid_Y_x;
+        float Yy = dst[ys] - centroid_Y_y;
+        float Yz = dst[zs] - centroid_Y_z;
 
+        // A = X_centered * Y_centered^T
         a00 += Xx * Yx;  a01 += Xx * Yy;  a02 += Xx * Yz;
         a10 += Xy * Yx;  a11 += Xy * Yy;  a12 += Xy * Yz;
         a20 += Xz * Yx;  a21 += Xz * Yy;  a22 += Xz * Yz;
     }
 
-    // Compute M = A^T A (symmetric 3×3)
+    // Compute M = A^T * A (symmetric 3×3)
     float m00 = a00*a00 + a10*a10 + a20*a20;
     float m01 = a00*a01 + a10*a11 + a20*a21;
     float m02 = a00*a02 + a10*a12 + a20*a22;
@@ -129,105 +192,104 @@ void computeA(
 
     float m22 = a02*a02 + a12*a12 + a22*a22;
 
-    // Compute coefficients of characteristic polynomial det(M - λI) = 0
-    // For symmetric matrix: -λ³ + c₂λ² + c₁λ + c₀ = 0
-    
-    float c2 = m00 + m11 + m22;  // trace(M)
-    
-    float c1 = -(m00*m11 - m01*m01 + m00*m22 - m02*m02 + m11*m22 - m12*m12);
-    
-    float c0 = m00*(m11*m22 - m12*m12) - m01*(m01*m22 - m12*m02) + m02*(m01*m12 - m11*m02);
+    // STEP2: Compute eigenvalues
+    float eigenvalues[3];
+    compute_eigenvalues_symmetric_3x3(m00, m01, m02, m11, m12, m22, eigenvalues);
 
-    // Solve cubic: λ³ - c₂λ² - c₁λ - c₀ = 0
-    // Using substitution λ = t + c₂/3 to get depressed cubic: t³ + pt + q = 0
-    
-    float p = c1 - c2*c2/3.0f;
-    float q = c0 + 2.0f*c2*c2*c2/27.0f - c2*c1/3.0f;
-    
-    // Cardano's formula
-    float discriminant = q*q/4.0f + p*p*p/27.0f;
-    
-    float lambda0, lambda1, lambda2;
-    
-    if (discriminant >= 0) {
-        // One real root, two complex (shouldn't happen for symmetric positive semi-definite)
-        float sqrt_disc = sqrtf(discriminant);
-        float u = cbrtf(-q/2.0f + sqrt_disc);
-        float v = cbrtf(-q/2.0f - sqrt_disc);
-        lambda0 = u + v + c2/3.0f;
-        lambda1 = lambda0;
-        lambda2 = lambda0;
-    } else {
-        // Three distinct real roots (typical case)
-        float r = sqrtf(-p*p*p/27.0f);
-        float theta = acosf(-q/(2.0f*r));
-        float rho = cbrtf(r);
-        
-        lambda0 = 2.0f * rho * cosf(theta/3.0f) + c2/3.0f;
-        lambda1 = 2.0f * rho * cosf((theta + 2.0f*3.14159265359f)/3.0f) + c2/3.0f;
-        lambda2 = 2.0f * rho * cosf((theta + 4.0f*3.14159265359f)/3.0f) + c2/3.0f;
-    }
+    // if (snap == 1) {
+    //     printf("Debug snap %d:\n", snap);
+    //     printf("  Centroids X: (%.6f, %.6f, %.6f)\n", centroid_X_x, centroid_X_y, centroid_X_z);
+    //     printf("  Centroids Y: (%.6f, %.6f, %.6f)\n", centroid_Y_x, centroid_Y_y, centroid_Y_z);
+    //     printf("  A matrix:\n");
+    //     printf("  [%.6f %.6f %.6f]\n", a00, a01, a02);
+    //     printf("  [%.6f %.6f %.6f]\n", a10, a11, a12);
+    //     printf("  [%.6f %.6f %.6f]\n", a20, a21, a22);
+    //     printf("  Eigenvalues: %.6f, %.6f, %.6f\n", eigenvalues[0], eigenvalues[1], eigenvalues[2]);
+    // }
 
-    if (snap == 1) {
-        printf("Debug snap %d:\n", snap);
-        printf("  M trace: %.6f\n", c2);
-        printf("  M determinant: %.6f\n", c0);
-        printf("  Eigenvalues: %.6f, %.6f, %.6f\n", lambda0, lambda1, lambda2);
-    }
-
-    // Compute eigenvectors
+    // STEP 3: compute eigenvectors
     float v0[3], v1[3], v2[3];
     
-    compute_eigenvector(m00, m01, m02, m11, m12, m22, lambda0, v0);
-    compute_eigenvector(m00, m01, m02, m11, m12, m22, lambda1, v1);
-    compute_eigenvector(m00, m01, m02, m11, m12, m22, lambda2, v2);
+    compute_eigenvector(m00, m01, m02, m11, m12, m22, eigenvalues[0], v0);
+    compute_eigenvector(m00, m01, m02, m11, m12, m22, eigenvalues[1], v1);
+    compute_eigenvector(m00, m01, m02, m11, m12, m22, eigenvalues[2], v2);
 
+    // Orthonormalization
+    // normalize v0
+    float n0 = rsqrtf(v0[0]*v0[0] + v0[1]*v0[1] + v0[2]*v0[2]);
+    v0[0]/=n0; v0[1]/=n0; v0[2]/=n0;
+
+    // v1 = v1 - (v1·v0) v0
+    float dot10 = v1[0]*v0[0] + v1[1]*v0[1] + v1[2]*v0[2];
+    v1[0] -= dot10*v0[0];
+    v1[1] -= dot10*v0[1];
+    v1[2] -= dot10*v0[2];
+
+    // normalize v1
+    float n1 = rsqrtf(v1[0]*v1[0] + v1[1]*v1[1] + v1[2]*v1[2]);
+    v1[0]/=n1; v1[1]/=n1; v1[2]/=n1;
+
+    // v2 = v0 × v1
+    v2[0] = v0[1]*v1[2] - v0[2]*v1[1];
+    v2[1] = v0[2]*v1[0] - v0[0]*v1[2];
+    v2[2] = v0[0]*v1[1] - v0[1]*v1[0];
+
+    // STEP 4: Solve AV = UΣ where Σ contains eigenvalues
     // Compute singular values (sqrt of eigenvalues, ensuring non-negative)
-    float s0 = sqrtf(fmaxf(lambda0, 0.0f));
-    float s1 = sqrtf(fmaxf(lambda1, 0.0f));
-    float s2 = sqrtf(fmaxf(lambda2, 0.0f));
+    float s0 = sqrtf(fmaxf(eigenvalues[0], 0.0f));
+    float s1 = sqrtf(fmaxf(eigenvalues[1], 0.0f));
+    float s2 = sqrtf(fmaxf(eigenvalues[2], 0.0f));
     
     // Compute A*V
+    float av0[3], av1[3], av2[3];
+    
+    av0[0] = a00*v0[0] + a01*v0[1] + a02*v0[2];
+    av0[1] = a10*v0[0] + a11*v0[1] + a12*v0[2];
+    av0[2] = a20*v0[0] + a21*v0[1] + a22*v0[2];
+    
+    av1[0] = a00*v1[0] + a01*v1[1] + a02*v1[2];
+    av1[1] = a10*v1[0] + a11*v1[1] + a12*v1[2];
+    av1[2] = a20*v1[0] + a21*v1[1] + a22*v1[2];
+    
+    av2[0] = a00*v2[0] + a01*v2[1] + a02*v2[2];
+    av2[1] = a10*v2[0] + a11*v2[1] + a12*v2[2];
+    av2[2] = a20*v2[0] + a21*v2[1] + a22*v2[2];
+    
     float u0[3], u1[3], u2[3];
-    
-    u0[0] = a00*v0[0] + a01*v0[1] + a02*v0[2];
-    u0[1] = a10*v0[0] + a11*v0[1] + a12*v0[2];
-    u0[2] = a20*v0[0] + a21*v0[1] + a22*v0[2];
-    
-    u1[0] = a00*v1[0] + a01*v1[1] + a02*v1[2];
-    u1[1] = a10*v1[0] + a11*v1[1] + a12*v1[2];
-    u1[2] = a20*v1[0] + a21*v1[1] + a22*v1[2];
-    
-    u2[0] = a00*v2[0] + a01*v2[1] + a02*v2[2];
-    u2[1] = a10*v2[0] + a11*v2[1] + a12*v2[2];
-    u2[2] = a20*v2[0] + a21*v2[1] + a22*v2[2];
-    
-    // Normalize by singular values to get U = A*V*Σ^(-1)
-    if (s0 > 1e-8f) {
-        u0[0] /= s0; u0[1] /= s0; u0[2] /= s0;
-    }
-    if (s1 > 1e-8f) {
-        u1[0] /= s1; u1[1] /= s1; u1[2] /= s1;
-    }
-    if (s2 > 1e-8f) {
-        u2[0] /= s2; u2[1] /= s2; u2[2] /= s2;
-    }
-    
-    // Store rotation matrix U (row-major)
-    float* U = outA + snap * 9;
-    U[0] = u0[0]; U[1] = u1[0]; U[2] = u2[0];
-    U[3] = u0[1]; U[4] = u1[1]; U[5] = u2[1];
-    U[6] = u0[2]; U[7] = u1[2]; U[8] = u2[2];
 
-    if (snap == 1) {
-        printf("  Singular values: %.6f, %.6f, %.6f\n", s0, s1, s2);
-        printf("  Rotation matrix U:\n");
-        printf("  [%.6f %.6f %.6f]\n", U[0], U[1], U[2]);
-        printf("  [%.6f %.6f %.6f]\n", U[3], U[4], U[5]);
-        printf("  [%.6f %.6f %.6f]\n", U[6], U[7], U[8]);
+    u0[0] = av0[0] * (1 / sqrtf(eigenvalues[0]));
+    u0[1] = av0[1] * (1 / sqrtf(eigenvalues[0]));
+    u0[2] = av0[2] * (1 / sqrtf(eigenvalues[0]));
+
+    u1[0] = av1[0] * (1 / sqrtf(eigenvalues[1]));
+    u1[1] = av1[1] * (1 / sqrtf(eigenvalues[1]));
+    u1[2] = av1[2] * (1 / sqrtf(eigenvalues[1]));
+
+    u2[0] = av2[0] * (1 / sqrtf(eigenvalues[2]));
+    u2[1] = av2[1] * (1 / sqrtf(eigenvalues[2]));
+    u2[2] = av2[2] * (1 / sqrtf(eigenvalues[2]));
+
+    // We want direct rotation
+    float detR =
+        u0[0]*(u1[1]*u2[2] - u1[2]*u2[1]) -
+        u1[0]*(u0[1]*u2[2] - u0[2]*u2[1]) +
+        u2[0]*(u0[1]*u1[2] - u0[2]*u1[1]);
+
+    if (detR < 0.0f) {
+        u2[0] = -u2[0];
+        u2[1] = -u2[1];
+        u2[2] = -u2[2];
     }
+
+
+    // if (snap == 1) {
+    //     printf("  Rotation matrix U:\n");
+    //     printf("  [%.6f %.6f %.6f]\n", u0[0], u1[0], u2[0]);
+    //     printf("  [%.6f %.6f %.6f]\n", u0[1], u1[1], u2[1]);
+    //     printf("  [%.6f %.6f %.6f]\n", u0[2], u1[2], u2[2]);
+    // }
     
-    // Calculate RMSD
+    // Calculate RMSD: minimize ||X_centered - R*Y_centered||
     float sum_squared_dist = 0.0f;
     
     for (int a = 0; a < N_atoms; ++a)
@@ -236,34 +298,36 @@ void computeA(
         int yr = 1*block + a*N_frames + ref_idx;
         int zr = 2*block + a*N_frames + ref_idx;
         
-        float Xi_x = dst[xr];
-        float Xi_y = dst[yr];
-        float Xi_z = dst[zr];
+        // Center reference coordinates
+        float Xi_x = dst[xr] - centroid_X_x;
+        float Xi_y = dst[yr] - centroid_X_y;
+        float Xi_z = dst[zr] - centroid_X_z;
         
         int xs = 0*block + a*N_frames + snap;
         int ys = 1*block + a*N_frames + snap;
         int zs = 2*block + a*N_frames + snap;
         
-        float Yi_x = dst[xs];
-        float Yi_y = dst[ys];
-        float Yi_z = dst[zs];
+        // Center snapshot coordinates
+        float Yi_x = dst[xs] - centroid_Y_x;
+        float Yi_y = dst[ys] - centroid_Y_y;
+        float Yi_z = dst[zs] - centroid_Y_z;
         
-        // Apply rotation: U*Xi
-        float UXi_x = U[0]*Xi_x + U[1]*Xi_y + U[2]*Xi_z;
-        float UXi_y = U[3]*Xi_x + U[4]*Xi_y + U[5]*Xi_z;
-        float UXi_z = U[6]*Xi_x + U[7]*Xi_y + U[8]*Xi_z;
+        // Apply rotation to centered Y: R*Y_centered
+        float RYi_x = u0[0]*Yi_x + u1[0]*Yi_y + u2[0]*Yi_z;
+        float RYi_y = u0[1]*Yi_x + u1[1]*Yi_y + u2[1]*Yi_z;
+        float RYi_z = u0[2]*Yi_x + u1[2]*Yi_y + u2[2]*Yi_z;
         
-        // Compute squared distance
-        float diff_x = UXi_x - Yi_x;
-        float diff_y = UXi_y - Yi_y;
-        float diff_z = UXi_z - Yi_z;
+        // Compute squared distance: ||X_centered - R*Y_centered||²
+        float diff_x = Xi_x - RYi_x;
+        float diff_y = Xi_y - RYi_y;
+        float diff_z = Xi_z - RYi_z;
         
         sum_squared_dist += diff_x*diff_x + diff_y*diff_y + diff_z*diff_z;
     }
     
     float rmsd = sqrtf(sum_squared_dist / N_atoms);
     
-    if (snap != ref_idx && snap <= 3) {
+    if (snap != ref_idx && snap <= 5) {
         printf("  RMSD: %.6f\n", rmsd);
     }
 }

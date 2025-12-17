@@ -22,9 +22,8 @@ inline void freeOnGPU(float* ptr) {
 }
 
 __global__
-void computeA(
+void RMSD(
     const float* __restrict__ dst,   // reordered coordinates: X,Y,Z blocks
-    float* __restrict__ outA,        // N_frames × 9 matrices
     int N_frames,
     int N_atoms,
     int ref_idx

@@ -32,17 +32,12 @@ int main() {
     cudaMalloc(&frameGPU, total_size);
     cudaMemcpy(frameGPU, frame, total_size, cudaMemcpyHostToDevice);
 
-    // Allocate output 3x3 matrices: one per frame
-    float* d_outA;
-    cudaMalloc(&d_outA, N_frames * 9 * sizeof(float));
-
     // Launch computeA
     int threads = 256;
     int blocks = (N_frames + threads - 1) / threads;
 
-    computeA<<<blocks, threads>>>(
+    RMSD<<<blocks, threads>>>(
         frameGPU,   // reordered coordinates
-        d_outA,     // output A matrices
         N_frames,
         N_atoms,
         0           // ref snapshot index
@@ -54,7 +49,6 @@ int main() {
     // Cleanup
     delete[] frame;
     cudaFree(frameGPU);
-    cudaFree(d_outA);
 
     return 0;
 }
