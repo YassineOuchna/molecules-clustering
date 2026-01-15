@@ -67,7 +67,7 @@ TrajectoryInfo write_trajectory_to_file(const std::string& trajectory_file,
 
 int main() {
     try {
-        std::string topology_file = "./dataset/1k5n_A.pdb";
+        std::string topology_file = "./dataset/1k5n/1k5n_A.pdb";
         std::string output_file = "output/snapshots_coords.bin";
         
         // Load topology once
@@ -93,18 +93,18 @@ int main() {
         
         // Process R1
         std::cout << "\nReading R1 trajectory..." << std::endl;
-        auto info_R1 = write_trajectory_to_file("./dataset/1k5n_A_prod_R1_fit.xtc", topology, outfile);
+        auto info_R1 = write_trajectory_to_file("./dataset/1k5n/1k5n_A_prod_R1_fit.xtc", topology, outfile);
         total_frames += info_R1.n_frames;
         n_atoms = info_R1.n_atoms;
         
         // Process R2
         std::cout << "\nReading R2 trajectory..." << std::endl;
-        auto info_R2 = write_trajectory_to_file("./dataset/1k5n_A_prod_R2_fit.xtc", topology, outfile);
+        auto info_R2 = write_trajectory_to_file("./dataset/1k5n/1k5n_A_prod_R2_fit.xtc", topology, outfile);
         total_frames += info_R2.n_frames;
         
         // Process R3
         std::cout << "\nReading R3 trajectory..." << std::endl;
-        auto info_R3 = write_trajectory_to_file("./dataset/1k5n_A_prod_R3_fit.xtc", topology, outfile);
+        auto info_R3 = write_trajectory_to_file("./dataset/1k5n/1k5n_A_prod_R3_fit.xtc", topology, outfile);
         total_frames += info_R3.n_frames;
         
         // Write header with final dimensions
