@@ -16,6 +16,17 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 
+// CUDA error checking macro
+#define CUDA_CHECK(call) \
+do { \
+    cudaError_t err = call; \
+    if (err != cudaSuccess) { \
+        fprintf(stderr, "CUDA error at %s:%d: %s\n", \
+                __FILE__, __LINE__, cudaGetErrorString(err)); \
+        exit(EXIT_FAILURE); \
+    } \
+} while(0)
+
 
 void pickRandomCentroids(int N_frames, int K, int* centroids) {
     // Create a vector with all frame indices
@@ -141,22 +152,25 @@ float daviesBouldinIndex(
 int main() {
 
     cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
 
-    cudaEventRecord(start, 0);
+    CUDA_CHECK(cudaEventRecord(start, 0));
 
-    int K = 10;
+    int K = 20;
     int MAX_ITER = 50;
 
     FileUtils file; 
 
     std::cout << file << std::endl;
 
-    size_t N_frames = file.getN_frames();
-    // size_t N_frames = 10000;
+    // size_t N_frames = file.getN_frames();
+    size_t N_frames = 10000;
     size_t N_atoms  = file.getN_atoms();
     size_t N_dims   = file.getN_dims();
+
+    std::cout << "Processing " << N_frames << " frames with " 
+              << N_atoms << " atoms each" << std::endl;
 
     // Load and reorder into X,Y,Z blocks
     float* frame = file.loadData(N_frames);
@@ -166,55 +180,142 @@ int main() {
 
     // Copy reordered CPU → GPU
     float* frameGPU;
-    cudaMalloc(&frameGPU, total_size);
-    cudaMemcpy(frameGPU, frame, total_size, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&frameGPU, total_size));
+    CUDA_CHECK(cudaMemcpy(frameGPU, frame, total_size, cudaMemcpyHostToDevice));
 
-    // Load RMSD tab
+    std::cout << "Copied " << (total_size / (1024.0*1024.0)) 
+              << " MB to GPU" << std::endl;
+
+    // Allocate RMSD matrix
     float* rmsd;
     size_t size_rmsd = N_frames * N_frames * sizeof(float);
-    cudaMalloc(&rmsd, size_rmsd);
+    CUDA_CHECK(cudaMalloc(&rmsd, size_rmsd));
+    
+    std::cout << "Allocated " << (size_rmsd / (1024.0*1024.0)) 
+              << " MB for RMSD matrix" << std::endl;
 
-    dim3 threads(256,1);
-    dim3 blocks((N_frames + threads.x - 1) / threads.x, (N_frames + threads.y - 1) / threads.y);
+    // FIXED: Better 2D thread configuration
+    // Option 1: 2D threading (better for square matrices)
+    dim3 threads(16, 16);  // 256 threads per block
+    dim3 blocks((N_frames + threads.x - 1) / threads.x, 
+                (N_frames + threads.y - 1) / threads.y);
+    
+    // Option 2: 1D threading with explicit 2D blocks (alternative)
+    // dim3 threads(256, 1);
+    // dim3 blocks((N_frames + 255) / 256, N_frames);
 
-    std::cout << "Kernel Start" << std::endl;
+    std::cout << "Kernel configuration: " << blocks.x << "x" << blocks.y 
+              << " blocks, " << threads.x << "x" << threads.y << " threads" << std::endl;
+    std::cout << "Total threads: " << (blocks.x * blocks.y * threads.x * threads.y) << std::endl;
+    std::cout << "Useful work (upper triangle): " << (N_frames * (N_frames + 1) / 2) << std::endl;
+
+    std::cout << "\nKernel Start" << std::endl;
     RMSD<<<blocks, threads>>>(
         frameGPU,
         N_frames,
         N_atoms,
         rmsd
     );
-    cudaDeviceSynchronize();
+    
+    // Check for kernel launch errors
+    CUDA_CHECK(cudaGetLastError());
+    
+    // Wait for kernel to finish and check for execution errors
+    CUDA_CHECK(cudaDeviceSynchronize());
     std::cout << "Kernel Finished" << std::endl;
 
+    // Copy RMSD matrix back to host
     float* rmsdHost = new float[N_frames*N_frames];
-    cudaMemcpy(rmsdHost, rmsd, size_rmsd, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(rmsdHost, rmsd, size_rmsd, cudaMemcpyDeviceToHost));
+    
+    std::cout << "RMSD matrix copied to host" << std::endl;
+
+    // Verification: Check symmetry
+    std::cout << "\nVerifying RMSD matrix symmetry..." << std::endl;
+    bool symmetric = true;
+    int errors = 0;
+    const int max_errors_to_show = 5;
+    
+    for (int i = 0; i < N_frames && errors < max_errors_to_show; i++) {
+        for (int j = i+1; j < N_frames && errors < max_errors_to_show; j++) {
+            float val1 = rmsdHost[i * N_frames + j];
+            float val2 = rmsdHost[j * N_frames + i];
+            if (fabsf(val1 - val2) > 1e-5f) {
+                std::cout << "Asymmetry at (" << i << "," << j << "): " 
+                          << val1 << " vs " << val2 << std::endl;
+                symmetric = false;
+                errors++;
+            }
+        }
+    }
+    
+    if (symmetric) {
+        std::cout << "✓ RMSD matrix is symmetric" << std::endl;
+    } else {
+        std::cout << "✗ WARNING: RMSD matrix has asymmetries!" << std::endl;
+    }
+    
+    // Show some sample values
+    std::cout << "\nSample RMSD values:" << std::endl;
+    for (int i = 0; i < std::min(5, (int)N_frames); i++) {
+        std::cout << "RMSD[0," << i << "] = " << rmsdHost[i] << std::endl;
+    }
 
     // Pick first K unique indices
     int* centroids = new int[K];
     pickRandomCentroids(N_frames, K, centroids);
     int* clusters = new int[N_frames];
 
-    // LOOP STARTS HERE
-    for (int i=0; i<MAX_ITER; i++) {
-        // std::cout << "Iteration " << i+1 << std::endl;
-        // for (int k=0; k<K; k++) {
-        //     for(int i=0; i<3; i++) {
-        //         std::cout << "RMSD between " << centroids[k] << " and " << i << " is " << rmsdHost[centroids[k]*N_frames + i] << std::endl;
-        //     }
-        // }
+    std::cout << "\n=== K-Medoids Clustering ===" << std::endl;
+    std::cout << "K = " << K << ", Max iterations = " << MAX_ITER << std::endl;
 
-        // Affecting molecules to the different centroids based on rmsd
+    // LOOP STARTS HERE
+    for (int iter=0; iter<MAX_ITER; iter++) {
+        // Assign molecules to nearest centroids
         createClusters(N_frames, K, rmsdHost, centroids, clusters);
 
-        // Define new centroids
+        // Update centroids to minimize intra-cluster distance
+        int* old_centroids = new int[K];
+        memcpy(old_centroids, centroids, K * sizeof(int));
+        
         updateCentroids(N_frames, K, clusters, rmsdHost, centroids);
+        
+        // Check for convergence
+        bool converged = true;
+        for (int k = 0; k < K; k++) {
+            if (centroids[k] != old_centroids[k]) {
+                converged = false;
+                break;
+            }
+        }
+        
+        delete[] old_centroids;
+        
+        if (converged) {
+            std::cout << "Converged at iteration " << (iter + 1) << std::endl;
+            break;
+        }
     }
 
-    std::cout << "Final centroids: " << std::endl;
+    std::cout << "\nFinal centroids: ";
     for (int i=0; i<K; i++) {
-        std::cout << centroids[i] << std::endl;
+        std::cout << centroids[i];
+        if (i < K-1) std::cout << ", ";
     }
+    std::cout << std::endl;
+
+    // Compute cluster sizes
+    std::vector<int> cluster_sizes(K, 0);
+    for (int i = 0; i < N_frames; i++) {
+        cluster_sizes[clusters[i]]++;
+    }
+    
+    std::cout << "\nCluster sizes: ";
+    for (int k = 0; k < K; k++) {
+        std::cout << "C" << k << "=" << cluster_sizes[k];
+        if (k < K-1) std::cout << ", ";
+    }
+    std::cout << std::endl;
 
     float db = daviesBouldinIndex(
         N_frames,
@@ -224,9 +325,10 @@ int main() {
         rmsdHost
     );
 
-    std::cout << "Davies–Bouldin index: " << db << std::endl;
+    std::cout << "\nDavies–Bouldin index: " << db << " (lower is better)" << std::endl;
 
-    // Print db for random clustering
+    // Compare with random clustering
+    std::cout << "\n=== Random Clustering Baseline ===" << std::endl;
     pickRandomCentroids(N_frames, K, centroids);
     for (int i = 0; i < N_frames; i++) {
         clusters[i] = rand() % K;
@@ -248,17 +350,22 @@ int main() {
     delete[] centroids;
     delete[] rmsdHost;
     delete[] clusters;
-    cudaFree(frameGPU);
-    cudaFree(rmsd);
+    CUDA_CHECK(cudaFree(frameGPU));
+    CUDA_CHECK(cudaFree(rmsd));
 
-    cudaEventRecord(stop, 0);
-
-    cudaEventSynchronize(stop);
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
 
     float elapsed_ms = 0.0f;
-    cudaEventElapsedTime(&elapsed_ms, start, stop);
+    CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start, stop));
 
-    printf("Main time execution: %.1f s\n", elapsed_ms/1000.0f);
+    std::cout << "\n=== Performance ===" << std::endl;
+    std::cout << "Total execution time: " << elapsed_ms/1000.0f << " s" << std::endl;
+    std::cout << "RMSD computations: " << (unsigned long long)(N_frames * (N_frames + 1) / 2) << " pairs" << std::endl;
+    std::cout << "Throughput: " << (N_frames * (N_frames + 1) / 2) / (elapsed_ms/1000.0f) << " pairs/second" << std::endl;
+
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
 
     return 0;
 }
