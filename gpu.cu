@@ -122,28 +122,18 @@ void RMSD(
 {
     int snap = blockIdx.x * blockDim.x + threadIdx.x;
     int ref_idx = blockIdx.y * blockDim.y + threadIdx.y;
-    
-    // Bounds check
-    if (snap >= N_frames || ref_idx >= N_frames)
+
+    // Only compute upper triangle
+    if (snap >= N_frames || ref_idx >= N_frames || snap < ref_idx)
         return;
-    
-    // FIX: Only compute upper triangle to avoid race conditions
-    // Each pair (i,j) where i < j is computed only once
-    // if (snap < ref_idx)
-    //     return;
-        
-    // if (snap == ref_idx) {
-    //     out[ref_idx * N_frames + snap] = 0.0f;
-    //     return;
-    // }
 
     int block = N_atoms * N_frames;
 
-    // STEP 0: Compute centroids
-    float centroid_X_x = 0.0f, centroid_X_y = 0.0f, centroid_X_z = 0.0f;
-    float centroid_Y_x = 0.0f, centroid_Y_y = 0.0f, centroid_Y_z = 0.0f;
+    // ----------------- STEP 0: Centroids -----------------
+    float cx=0.f, cy=0.f, cz=0.f;
+    float sx=0.f, sy=0.f, sz=0.f;
 
-    for (int a = 0; a < N_atoms; ++a)
+    for (int a=0; a<N_atoms; ++a)
     {
         int xr = 0*block + a*N_frames + ref_idx;
         int yr = 1*block + a*N_frames + ref_idx;
@@ -153,29 +143,17 @@ void RMSD(
         int ys = 1*block + a*N_frames + snap;
         int zs = 2*block + a*N_frames + snap;
 
-        centroid_X_x += dst[xr];
-        centroid_X_y += dst[yr];
-        centroid_X_z += dst[zr];
-
-        centroid_Y_x += dst[xs];
-        centroid_Y_y += dst[ys];
-        centroid_Y_z += dst[zs];
+        cx += dst[xr]; cy += dst[yr]; cz += dst[zr];
+        sx += dst[xs]; sy += dst[ys]; sz += dst[zs];
     }
 
-    centroid_X_x /= N_atoms;
-    centroid_X_y /= N_atoms;
-    centroid_X_z /= N_atoms;
+    cx/=N_atoms; cy/=N_atoms; cz/=N_atoms;
+    sx/=N_atoms; sy/=N_atoms; sz/=N_atoms;
 
-    centroid_Y_x /= N_atoms;
-    centroid_Y_y /= N_atoms;
-    centroid_Y_z /= N_atoms;
+    // ----------------- STEP 1: Correlation matrix A -----------------
+    float a00=0,a01=0,a02=0,a10=0,a11=0,a12=0,a20=0,a21=0,a22=0;
 
-    // STEP 1: Build correlation matrix A
-    float a00=0, a01=0, a02=0;
-    float a10=0, a11=0, a12=0;
-    float a20=0, a21=0, a22=0;
-
-    for (int a = 0; a < N_atoms; ++a)
+    for (int a=0;a<N_atoms;a++)
     {
         int xr = 0*block + a*N_frames + ref_idx;
         int yr = 1*block + a*N_frames + ref_idx;
@@ -185,20 +163,15 @@ void RMSD(
         int ys = 1*block + a*N_frames + snap;
         int zs = 2*block + a*N_frames + snap;
 
-        float Xx = dst[xr] - centroid_X_x;
-        float Xy = dst[yr] - centroid_X_y;
-        float Xz = dst[zr] - centroid_X_z;
+        float Xx = dst[xr]-cx; float Xy = dst[yr]-cy; float Xz = dst[zr]-cz;
+        float Yx = dst[xs]-sx; float Yy = dst[ys]-sy; float Yz = dst[zs]-sz;
 
-        float Yx = dst[xs] - centroid_Y_x;
-        float Yy = dst[ys] - centroid_Y_y;
-        float Yz = dst[zs] - centroid_Y_z;
-
-        a00 += Xx * Yx;  a01 += Xx * Yy;  a02 += Xx * Yz;
-        a10 += Xy * Yx;  a11 += Xy * Yy;  a12 += Xy * Yz;
-        a20 += Xz * Yx;  a21 += Xz * Yy;  a22 += Xz * Yz;
+        a00 += Xx*Yx; a01 += Xx*Yy; a02 += Xx*Yz;
+        a10 += Xy*Yx; a11 += Xy*Yy; a12 += Xy*Yz;
+        a20 += Xz*Yx; a21 += Xz*Yy; a22 += Xz*Yz;
     }
 
-    // Compute M = A^T * A
+    // ----------------- STEP 2: M = A^T * A -----------------
     float m00 = a00*a00 + a10*a10 + a20*a20;
     float m01 = a00*a01 + a10*a11 + a20*a21;
     float m02 = a00*a02 + a10*a12 + a20*a22;
@@ -206,234 +179,103 @@ void RMSD(
     float m12 = a01*a02 + a11*a12 + a21*a22;
     float m22 = a02*a02 + a12*a12 + a22*a22;
 
-    // STEP 2: Compute eigenvalues
-    float eigenvalues[3];
-    compute_eigenvalues_symmetric_3x3(m00, m01, m02, m11, m12, m22, eigenvalues);
+    // ----------------- STEP 3: Eigenvalues -----------------
+    float lambda[3];
+    compute_eigenvalues_symmetric_3x3(m00,m01,m02,m11,m12,m22,lambda);
 
-    // STEP 3: Compute eigenvectors
-    float v0[3], v1[3], v2[3];
-    
-    compute_eigenvector(m00, m01, m02, m11, m12, m22, eigenvalues[0], v0);
-    compute_eigenvector(m00, m01, m02, m11, m12, m22, eigenvalues[1], v1);
-    compute_eigenvector(m00, m01, m02, m11, m12, m22, eigenvalues[2], v2);
+    // ----------------- STEP 4: Eigenvectors (V) -----------------
+    float vec[3];
 
-    // FIXED: Orthonormalization with stability checks
-    // Normalize v0
-    float mag0 = v0[0]*v0[0] + v0[1]*v0[1] + v0[2]*v0[2];
-    if (mag0 > 1e-8f) {
-        float n0 = rsqrtf(mag0);
-        v0[0] *= n0; 
-        v0[1] *= n0; 
-        v0[2] *= n0;
-    } else {
-        // Degenerate case - use default
-        v0[0] = 1.0f; 
-        v0[1] = 0.0f; 
-        v0[2] = 0.0f;
-    }
+    compute_eigenvector(m00,m01,m02,m11,m12,m22,lambda[0], vec);
+    float v0x=vec[0], v0y=vec[1], v0z=vec[2];
 
-    // Gram-Schmidt: v1 = v1 - (v1·v0)v0
-    float dot10 = v1[0]*v0[0] + v1[1]*v0[1] + v1[2]*v0[2];
-    v1[0] -= dot10*v0[0];
-    v1[1] -= dot10*v0[1];
-    v1[2] -= dot10*v0[2];
+    compute_eigenvector(m00,m01,m02,m11,m12,m22,lambda[1], vec);
+    float v1x=vec[0], v1y=vec[1], v1z=vec[2];
 
-    // Normalize v1
-    float mag1 = v1[0]*v1[0] + v1[1]*v1[1] + v1[2]*v1[2];
-    if (mag1 > 1e-8f) {
-        float n1 = rsqrtf(mag1);
-        v1[0] *= n1; 
-        v1[1] *= n1; 
-        v1[2] *= n1;
-    } else {
-        // Degenerate case - make orthogonal to v0
-        if (fabsf(v0[0]) < 0.9f) {
-            v1[0] = 0.0f; 
-            v1[1] = -v0[2]; 
-            v1[2] = v0[1];
-        } else {
-            v1[0] = -v0[2]; 
-            v1[1] = 0.0f; 
-            v1[2] = v0[0];
-        }
-        float norm1 = sqrtf(v1[0]*v1[0] + v1[1]*v1[1] + v1[2]*v1[2]);
-        if (norm1 > 1e-8f) {
-            v1[0] /= norm1;
-            v1[1] /= norm1;
-            v1[2] /= norm1;
-        }
-    }
+    compute_eigenvector(m00,m01,m02,m11,m12,m22,lambda[2], vec);
+    float v2x=vec[0], v2y=vec[1], v2z=vec[2];
 
-    // v2 = v0 × v1 (cross product ensures orthogonality)
-    v2[0] = v0[1]*v1[2] - v0[2]*v1[1];
-    v2[1] = v0[2]*v1[0] - v0[0]*v1[2];
-    v2[2] = v0[0]*v1[1] - v0[1]*v1[0];
+    // ----------------- STEP 5: Orthonormalize V -----------------
+    // Gram-Schmidt v1
+    float dot = v1x*v0x + v1y*v0y + v1z*v0z;
+    v1x -= dot*v0x; v1y -= dot*v0y; v1z -= dot*v0z;
+    float mag = sqrtf(v1x*v1x + v1y*v1y + v1z*v1z);
+    if(mag>1e-8f) { v1x/=mag; v1y/=mag; v1z/=mag; }
 
-    // STEP 4: Compute U from A*V with stability checks
-    float av0[3], av1[3], av2[3];
-    
-    av0[0] = a00*v0[0] + a01*v0[1] + a02*v0[2];
-    av0[1] = a10*v0[0] + a11*v0[1] + a12*v0[2];
-    av0[2] = a20*v0[0] + a21*v0[1] + a22*v0[2];
-    
-    av1[0] = a00*v1[0] + a01*v1[1] + a02*v1[2];
-    av1[1] = a10*v1[0] + a11*v1[1] + a12*v1[2];
-    av1[2] = a20*v1[0] + a21*v1[1] + a22*v1[2];
-    
-    av2[0] = a00*v2[0] + a01*v2[1] + a02*v2[2];
-    av2[1] = a10*v2[0] + a11*v2[1] + a12*v2[2];
-    av2[2] = a20*v2[0] + a21*v2[1] + a22*v2[2];
-    
-    float u0[3], u1[3], u2[3];
+    // v2 = v0 × v1
+    v2x = v0y*v1z - v0z*v1y;
+    v2y = v0z*v1x - v0x*v1z;
+    v2z = v0x*v1y - v0y*v1x;
 
-    // FIXED: Handle small eigenvalues more carefully
-    if (eigenvalues[0] > 1e-6f) {
-        float s0 = sqrtf(eigenvalues[0]);
-        u0[0] = av0[0] / s0;
-        u0[1] = av0[1] / s0;
-        u0[2] = av0[2] / s0;
-    } else {
-        // Degenerate - normalize av0 directly
-        float norm = sqrtf(av0[0]*av0[0] + av0[1]*av0[1] + av0[2]*av0[2]);
-        if (norm > 1e-8f) {
-            u0[0] = av0[0] / norm;
-            u0[1] = av0[1] / norm;
-            u0[2] = av0[2] / norm;
-        } else {
-            u0[0] = v0[0];
-            u0[1] = v0[1];
-            u0[2] = v0[2];
-        }
-    }
+    // ----------------- STEP 6: Compute U = A*V -----------------
+    float av0x = a00*v0x + a01*v0y + a02*v0z;
+    float av0y = a10*v0x + a11*v0y + a12*v0z;
+    float av0z = a20*v0x + a21*v0y + a22*v0z;
 
-    if (eigenvalues[1] > 1e-6f) {
-        float s1 = sqrtf(eigenvalues[1]);
-        u1[0] = av1[0] / s1;
-        u1[1] = av1[1] / s1;
-        u1[2] = av1[2] / s1;
-    } else {
-        float norm = sqrtf(av1[0]*av1[0] + av1[1]*av1[1] + av1[2]*av1[2]);
-        if (norm > 1e-8f) {
-            u1[0] = av1[0] / norm;
-            u1[1] = av1[1] / norm;
-            u1[2] = av1[2] / norm;
-        } else {
-            u1[0] = v1[0];
-            u1[1] = v1[1];
-            u1[2] = v1[2];
-        }
-    }
+    float av1x = a00*v1x + a01*v1y + a02*v1z;
+    float av1y = a10*v1x + a11*v1y + a12*v1z;
+    float av1z = a20*v1x + a21*v1y + a22*v1z;
 
-    if (eigenvalues[2] > 1e-6f) {
-        float s2 = sqrtf(eigenvalues[2]);
-        u2[0] = av2[0] / s2;
-        u2[1] = av2[1] / s2;
-        u2[2] = av2[2] / s2;
-    } else {
-        float norm = sqrtf(av2[0]*av2[0] + av2[1]*av2[1] + av2[2]*av2[2]);
-        if (norm > 1e-8f) {
-            u2[0] = av2[0] / norm;
-            u2[1] = av2[1] / norm;
-            u2[2] = av2[2] / norm;
-        } else {
-            u2[0] = v2[0];
-            u2[1] = v2[1];
-            u2[2] = v2[2];
-        }
-    }
+    float av2x = a00*v2x + a01*v2y + a02*v2z;
+    float av2y = a10*v2x + a11*v2y + a12*v2z;
+    float av2z = a20*v2x + a21*v2y + a22*v2z;
 
-    // Compute rotation matrix R = U*V^T
-    float R[3][3];
-    R[0][0] = u0[0]*v0[0] + u1[0]*v1[0] + u2[0]*v2[0];
-    R[0][1] = u0[0]*v0[1] + u1[0]*v1[1] + u2[0]*v2[1];
-    R[0][2] = u0[0]*v0[2] + u1[0]*v1[2] + u2[0]*v2[2];
+    float s0 = (lambda[0]>1e-6f)?sqrtf(lambda[0]):1.f;
+    float s1 = (lambda[1]>1e-6f)?sqrtf(lambda[1]):1.f;
+    float s2 = (lambda[2]>1e-6f)?sqrtf(lambda[2]):1.f;
 
-    R[1][0] = u0[1]*v0[0] + u1[1]*v1[0] + u2[1]*v2[0];
-    R[1][1] = u0[1]*v0[1] + u1[1]*v1[1] + u2[1]*v2[1];
-    R[1][2] = u0[1]*v0[2] + u1[1]*v1[2] + u2[1]*v2[2];
+    float u0x = av0x/s0, u0y = av0y/s0, u0z = av0z/s0;
+    float u1x = av1x/s1, u1y = av1y/s1, u1z = av1z/s1;
+    float u2x = av2x/s2, u2y = av2y/s2, u2z = av2z/s2;
 
-    R[2][0] = u0[2]*v0[0] + u1[2]*v1[0] + u2[2]*v2[0];
-    R[2][1] = u0[2]*v0[1] + u1[2]*v1[1] + u2[2]*v2[1];
-    R[2][2] = u0[2]*v0[2] + u1[2]*v1[2] + u2[2]*v2[2];
+    // ----------------- STEP 7: Compute R = U*V^T -----------------
+    float R00 = u0x*v0x + u1x*v1x + u2x*v2x;
+    float R01 = u0x*v0y + u1x*v1y + u2x*v2y;
+    float R02 = u0x*v0z + u1x*v1z + u2x*v2z;
 
-    // Check determinant and fix if needed
-    float detR = R[0][0]*(R[1][1]*R[2][2] - R[1][2]*R[2][1]) -
-                 R[0][1]*(R[1][0]*R[2][2] - R[1][2]*R[2][0]) +
-                 R[0][2]*(R[1][0]*R[2][1] - R[1][1]*R[2][0]);
+    float R10 = u0y*v0x + u1y*v1x + u2y*v2x;
+    float R11 = u0y*v0y + u1y*v1y + u2y*v2y;
+    float R12 = u0y*v0z + u1y*v1z + u2y*v2z;
 
-    if (detR < 0.0f) {
-        // Flip u2 to ensure proper rotation
-        u2[0] = -u2[0];
-        u2[1] = -u2[1];
-        u2[2] = -u2[2];
-        
-        R[0][0] = u0[0]*v0[0] + u1[0]*v1[0] + u2[0]*v2[0];
-        R[0][1] = u0[0]*v0[1] + u1[0]*v1[1] + u2[0]*v2[1];
-        R[0][2] = u0[0]*v0[2] + u1[0]*v1[2] + u2[0]*v2[2];
-        
-        R[1][0] = u0[1]*v0[0] + u1[1]*v1[0] + u2[1]*v2[0];
-        R[1][1] = u0[1]*v0[1] + u1[1]*v1[1] + u2[1]*v2[1];
-        R[1][2] = u0[1]*v0[2] + u1[1]*v1[2] + u2[1]*v2[2];
-        
-        R[2][0] = u0[2]*v0[0] + u1[2]*v1[0] + u2[2]*v2[0];
-        R[2][1] = u0[2]*v0[1] + u1[2]*v1[1] + u2[2]*v2[1];
-        R[2][2] = u0[2]*v0[2] + u1[2]*v1[2] + u2[2]*v2[2];
-    }
+    float R20 = u0z*v0x + u1z*v1x + u2z*v2x;
+    float R21 = u0z*v0y + u1z*v1y + u2z*v2y;
+    float R22 = u0z*v0z + u1z*v1z + u2z*v2z;
 
-    // ================= DEBUG PRINT =================
-    if (snap < 3 && ref_idx == 2) {
-        printf("snap=%d ref=%d det(R)=%.6f | [%.4f %.4f %.4f; %.4f %.4f %.4f; %.4f %.4f %.4f]\n",
-           snap, ref_idx, detR,
-           R[0][0],R[0][1],R[0][2],
-           R[1][0],R[1][1],R[1][2],
-           R[2][0],R[2][1],R[2][2]);
-    }
-    // =================================================
-
-
-    // Calculate RMSD
-    float sum_squared_dist = 0.0f;
-    
-    for (int a = 0; a < N_atoms; ++a)
+    // ----------------- STEP 8: Compute RMSD -----------------
+    float sum2 = 0.f;
+    for (int a=0;a<N_atoms;a++)
     {
         int xr = 0*block + a*N_frames + ref_idx;
         int yr = 1*block + a*N_frames + ref_idx;
         int zr = 2*block + a*N_frames + ref_idx;
-        
-        float Xi_x = dst[xr] - centroid_X_x;
-        float Xi_y = dst[yr] - centroid_X_y;
-        float Xi_z = dst[zr] - centroid_X_z;
-        
+
         int xs = 0*block + a*N_frames + snap;
         int ys = 1*block + a*N_frames + snap;
         int zs = 2*block + a*N_frames + snap;
-        
-        float Yi_x = dst[xs] - centroid_Y_x;
-        float Yi_y = dst[ys] - centroid_Y_y;
-        float Yi_z = dst[zs] - centroid_Y_z;
-        
-        // Apply rotation R to Y
-        float RYi_x = R[0][0]*Yi_x + R[0][1]*Yi_y + R[0][2]*Yi_z;
-        float RYi_y = R[1][0]*Yi_x + R[1][1]*Yi_y + R[1][2]*Yi_z;
-        float RYi_z = R[2][0]*Yi_x + R[2][1]*Yi_y + R[2][2]*Yi_z;
-        
-        float diff_x = Xi_x - RYi_x;
-        float diff_y = Xi_y - RYi_y;
-        float diff_z = Xi_z - RYi_z;
-        
-        sum_squared_dist += diff_x*diff_x + diff_y*diff_y + diff_z*diff_z;
-    }
-    
-    float rmsd = sqrtf(sum_squared_dist / N_atoms);
 
-    // ================= DEBUG RMSD =================
-    if (snap < 3 && ref_idx == 2) {
-        printf("RMSD(snap=%d, ref=%d) = %.8f\n", snap, ref_idx, rmsd);
+        float Xi_x = dst[xr]-cx;
+        float Xi_y = dst[yr]-cy;
+        float Xi_z = dst[zr]-cz;
+
+        float Yi_x = dst[xs]-sx;
+        float Yi_y = dst[ys]-sy;
+        float Yi_z = dst[zs]-sz;
+
+        float RYi_x = R00*Yi_x + R01*Yi_y + R02*Yi_z;
+        float RYi_y = R10*Yi_x + R11*Yi_y + R12*Yi_z;
+        float RYi_z = R20*Yi_x + R21*Yi_y + R22*Yi_z;
+
+        float dx = Xi_x - RYi_x;
+        float dy = Xi_y - RYi_y;
+        float dz = Xi_z - RYi_z;
+
+        sum2 += dx*dx + dy*dy + dz*dz;
     }
 
+    float rmsd = sqrtf(sum2/N_atoms);
 
-
-    // Write symmetric entries - safe now because only upper triangle is computed
-    out[ref_idx * N_frames + snap] = rmsd;
-    out[snap * N_frames + ref_idx] = rmsd;
+    out[ref_idx*N_frames + snap] = rmsd;
+    out[snap*N_frames + ref_idx] = rmsd; // symmetric
 }
+
+
