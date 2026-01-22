@@ -27,8 +27,6 @@ CHEMFILES_GIT = https://github.com/chemfiles/chemfiles
 CHEMFILES_DIR = ./chemfiles
 CHEMFILES_BUILD_DIR = $(CHEMFILES_DIR)/build
 BIN_DIR = output
-BIN_FILE = $(BIN_DIR)/snapshots_coords.bin
-
 
 
 # Object Lists
@@ -38,17 +36,32 @@ OBJECT_DIR = objects
 
 EXECNAME = main
 
-all: $(CHEMFILES_BUILD_DIR)/libchemfiles.a $(EXECNAME)
-	@./$(EXECNAME)
+# Argument variable for different dataset processing
+DATASET ?= 0
+ifeq ($(DATASET),0)
+    DATASET_READER = md_reader_legacy.cpp
+    BIN_FILE = $(BIN_DIR)/snapshots_coords_0.bin
+else
+    DATASET_READER = md_reader.cpp
+    BIN_FILE = $(BIN_DIR)/snapshots_coords_1.bin
+endif
 
-# Linking Rule
-$(EXECNAME): $(CC_OBJECTS) $(CUDA_OBJECTS) $(BIN_FILE)
-	@$(CPUCC) -o $(EXECNAME) $(CC_OBJECTS) $(CUDA_OBJECTS) $(CC_LDFLAGS) $(CUDA_LDFLAGS) $(CUDA_LIBS)
+all: $(CHEMFILES_BUILD_DIR)/libchemfiles.a $(EXECNAME)
+	@./$(EXECNAME) $(BIN_FILE)
+
+# Header dependecies
+$(OBJECT_DIR)/main.o: utils.h FileUtils.h
+$(OBJECT_DIR)/utils.o: utils.h FileUtils.h
 
 # C++ Compilation Rule
 $(OBJECT_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	@$(CPUCC) -c $< $(CXXFLAGS) -o $@
+	@$(CPUCC) -c -g -O0 $< $(CXXFLAGS) -o $@
+
+# Linking Rule
+$(EXECNAME): $(CC_OBJECTS) $(CUDA_OBJECTS) $(BIN_FILE)
+	@$(CPUCC) -o $(EXECNAME) -g -O0 $(CC_OBJECTS) $(CUDA_OBJECTS) $(CC_LDFLAGS) $(CUDA_LDFLAGS) $(CUDA_LIBS)
+
 
 # GPU Compilation Rule
 $(OBJECT_DIR)/%.o: %.cu
@@ -71,7 +84,7 @@ $(CHEMFILES_BUILD_DIR)/libchemfiles.a:
 $(BIN_FILE):
 	@echo "==> Writing snapshot data onto $(BIN_FILE)"
 	@mkdir -p $(BIN_DIR)
-	$(CPUCC) -o md_reader md_reader.cpp $(CXXFLAGS) $(CC_LDFLAGS) 
+	$(CPUCC) -o md_reader $(DATASET_READER) $(CXXFLAGS) $(CC_LDFLAGS) 
 	./md_reader
 	rm md_reader
 

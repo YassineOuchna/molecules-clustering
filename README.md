@@ -5,8 +5,11 @@ Clustering molecules dynamics on GPU
 This project uses `g++` and `nvcc` for compilation.  
 In the resulting folder from cloning this repository, do the following:
 ### 1. Download the dataset
-[Download raw dataset](https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/1k5n_A/1k5n_A_protein.zip)
-and unzip it in a `/dataset` folder
+For a relatively small dataset of ~30 000 snapshots, download the
+[small dataset](https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/1k5n_A/1k5n_A_protein.zip)
+and unzip it in a `/dataset_small` folder.  
+
+For the complete dataset of ~200 000 snapshots, download the [dataset](INSERT LINK HERE) and unzip it in a `/dataset` folder.
 
 [For more info on the data](https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/1k5n_A/1k5n_A.html)
 
@@ -18,7 +21,12 @@ sudo apt install cmake
 ```
 
 ### 3. Run make
+To run the clustering on the small dataset (best for local testing), the default make command does just that:  
 ```bash
 make
 ```
-This will compile the chemfiles library, convert the raw data into a binary file for ease of use and subsequently compiles and runs the main program.
+This will compile the chemfiles library, convert the raw data into a binary file for ease of use and subsequently compiles and runs the main program.  
+To target the complete dataset, run the following command:  
+```bash
+make DATASET=1
+```

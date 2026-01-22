@@ -12,9 +12,10 @@ private:
     size_t n_dims;
     friend std::ostream& operator<<(std::ostream& os, const FileUtils& f);
     std::ifstream file;
+    std::string file_name;
 
 public:
-    FileUtils();
+    FileUtils(const std::string& file_name);
     size_t getN_atoms() const;
     size_t getN_frames() const;
     size_t getN_dims() const;
