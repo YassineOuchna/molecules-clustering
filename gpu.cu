@@ -129,13 +129,13 @@ void RMSD(
     
     // FIX: Only compute upper triangle to avoid race conditions
     // Each pair (i,j) where i < j is computed only once
-    if (snap < ref_idx)
-        return;
+    // if (snap < ref_idx)
+    //     return;
         
-    if (snap == ref_idx) {
-        out[ref_idx * N_frames + snap] = 0.0f;
-        return;
-    }
+    // if (snap == ref_idx) {
+    //     out[ref_idx * N_frames + snap] = 0.0f;
+    //     return;
+    // }
 
     int block = N_atoms * N_frames;
 
@@ -380,6 +380,17 @@ void RMSD(
         R[2][2] = u0[2]*v0[2] + u1[2]*v1[2] + u2[2]*v2[2];
     }
 
+    // ================= DEBUG PRINT =================
+    if (snap < 3 && ref_idx == 2) {
+        printf("snap=%d ref=%d det(R)=%.6f | [%.4f %.4f %.4f; %.4f %.4f %.4f; %.4f %.4f %.4f]\n",
+           snap, ref_idx, detR,
+           R[0][0],R[0][1],R[0][2],
+           R[1][0],R[1][1],R[1][2],
+           R[2][0],R[2][1],R[2][2]);
+    }
+    // =================================================
+
+
     // Calculate RMSD
     float sum_squared_dist = 0.0f;
     
@@ -414,6 +425,13 @@ void RMSD(
     }
     
     float rmsd = sqrtf(sum_squared_dist / N_atoms);
+
+    // ================= DEBUG RMSD =================
+    if (snap < 3 && ref_idx == 2) {
+        printf("RMSD(snap=%d, ref=%d) = %.8f\n", snap, ref_idx, rmsd);
+    }
+
+
 
     // Write symmetric entries - safe now because only upper triangle is computed
     out[ref_idx * N_frames + snap] = rmsd;
