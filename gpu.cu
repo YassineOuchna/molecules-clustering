@@ -127,7 +127,7 @@ void RMSD(
     if (snap >= N_frames || ref_idx >= N_frames || snap < ref_idx)
         return;
 
-    int block = N_atoms * N_frames;
+    size_t block = (size_t)N_atoms * N_frames;
 
     // ----------------- STEP 0: Centroids -----------------
     float cx=0.f, cy=0.f, cz=0.f;
@@ -135,9 +135,9 @@ void RMSD(
 
     for (int a=0; a<N_atoms; ++a)
     {
-        int xr = 0*block + a*N_frames + ref_idx;
-        int yr = 1*block + a*N_frames + ref_idx;
-        int zr = 2*block + a*N_frames + ref_idx;
+        size_t xr = 0*block + (size_t)a * N_frames + ref_idx;
+        size_t yr = 1*block + (size_t)a * N_frames + ref_idx;
+        size_t zr = 2*block + (size_t)a * N_frames + ref_idx;
 
         int xs = 0*block + a*N_frames + snap;
         int ys = 1*block + a*N_frames + snap;
@@ -274,8 +274,12 @@ void RMSD(
 
     float rmsd = sqrtf(sum2/N_atoms);
 
-    out[ref_idx*N_frames + snap] = rmsd;
-    out[snap*N_frames + ref_idx] = rmsd; // symmetric
+    size_t idx1 = (size_t)ref_idx * N_frames + snap;
+    size_t idx2 = (size_t)snap * N_frames + ref_idx;
+
+    out[idx1] = rmsd;
+    out[idx2] = rmsd;
+
 }
 
 
