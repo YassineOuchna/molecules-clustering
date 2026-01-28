@@ -43,7 +43,7 @@ void pickKMedoidsPlusPlus(int N_frames, int K, const float* rmsd, int* centroids
     for (int k = 1; k < K; ++k) {
         for (int i = 0; i < N_frames; ++i) {
             float d = rmsd[centroids[k-1] * N_frames + i];
-            if (d < minDist[i]) minDist[i] = d;
+            if (d < minDist[i]) minDist[i] = d * d;
         }
 
         // Compute cumulative probability
