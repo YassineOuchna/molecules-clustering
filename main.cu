@@ -82,9 +82,11 @@ int main() {
               << " MB to GPU" << std::endl;
 
     // Allocate RMSD matrix
-    float* rmsd;
-    size_t size_rmsd = N_frames * N_frames * sizeof(float);
+    size_t rmsd_elems = (N_frames * (N_frames - 1)) / 2;
+    size_t size_rmsd  = rmsd_elems * sizeof(float);
+    float* rmsd = nullptr;
     CUDA_CHECK(cudaMalloc(&rmsd, size_rmsd));
+
     
     std::cout << "Allocated " << (size_rmsd / (1024.0*1024.0)) 
               << " MB for RMSD matrix" << std::endl;
@@ -107,30 +109,22 @@ int main() {
     std::cout << "Kernel Finished" << std::endl;
 
     // Copy RMSD matrix back to host
-    float* rmsdHost = new float[N_frames*N_frames];
     float t_d2h = 0.f;
+
+    float* rmsdHost = new float[rmsd_elems];
+    CUDA_CHECK(cudaEventRecord(evStart));
+    CUDA_CHECK(cudaMemcpy(rmsdHost, rmsd, rmsd_elems * sizeof(float),
+                        cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaEventRecord(evStop));
+    CUDA_CHECK(cudaEventSynchronize(evStop));
+    CUDA_CHECK(cudaEventElapsedTime(&t_d2h, evStart, evStop));
+
 
     CUDA_CHECK(cudaEventRecord(evStart));
     CUDA_CHECK(cudaMemcpy(rmsdHost, rmsd, size_rmsd, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaEventRecord(evStop));
     CUDA_CHECK(cudaEventSynchronize(evStop));
     CUDA_CHECK(cudaEventElapsedTime(&t_d2h, evStart, evStop));
-
-
-    // Verify symmetry
-    std::cout << "\nVerifying RMSD matrix symmetry..." << std::endl;
-    bool symmetric = true;
-    for (int i = 0; i < std::min(1000, (int)N_frames); i++) {
-        for (int j = i+1; j < std::min(1000, (int)N_frames); j++) {
-            if (fabsf(rmsdHost[i * N_frames + j] - rmsdHost[j * N_frames + i]) > 1e-5f) {
-                symmetric = false;
-                break;
-            }
-        }
-        if (!symmetric) break;
-    }
-    std::cout << (symmetric ? "✓" : "✗") << " RMSD matrix is " 
-              << (symmetric ? "" : "NOT ") << "symmetric" << std::endl;
 
     // ==============================================================
     // MAIN ANALYSIS: Scan K from K_MIN to K_MAX

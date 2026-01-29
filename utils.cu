@@ -8,6 +8,13 @@
 #include <chrono>
 #include <iomanip>
 
+float getRMSD(int i, int j, const float* rmsdHost, int N_frames) {
+    if (i == j) return 0.0f;
+    if (i > j) std::swap(i,j);
+    size_t idx = i*N_frames - (i*(i+1))/2 + (j - i - 1);
+    return rmsdHost[idx];
+};
+
 void pickKMedoidsPlusPlus(int N_frames, int K, const float* rmsd, int* centroids) {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -19,7 +26,7 @@ void pickKMedoidsPlusPlus(int N_frames, int K, const float* rmsd, int* centroids
 
     for (int k = 1; k < K; ++k) {
         for (int i = 0; i < N_frames; ++i) {
-            float d = rmsd[centroids[k-1] * N_frames + i];
+            float d = getRMSD(centroids[k-1], i, rmsd, N_frames);
             if (d < minDist[i]) minDist[i] = d * d;
         }
 
@@ -49,7 +56,7 @@ void createClusters(
         int best_k = -1;
 
         for (int k = 0; k < K; k++) {
-            float d = rmsd[centroids[k] * N_frames + i];
+            float d = getRMSD(centroids[k], i, rmsd, N_frames);
             if (d < best) {
                 best = d;
                 best_k = k;
@@ -76,7 +83,7 @@ void updateCentroids(
             float cost = 0.0f;
             for (int j = 0; j < N_frames; j++) {
                 if (clusters[j] != k) continue;
-                cost += rmsdHost[i * N_frames + j];
+                cost += getRMSD(i, j, rmsdHost, N_frames);
             }
 
             if (cost < best_cost) {
@@ -102,7 +109,7 @@ float daviesBouldinIndex(
 
     for (int i = 0; i < N_frames; i++) {
         int k = clusters[i];
-        S[k] += rmsd[centroids[k] * N_frames + i];
+        S[k] += getRMSD(centroids[k], i, rmsd, N_frames);
         counts[k]++;
     }
 
@@ -119,7 +126,7 @@ float daviesBouldinIndex(
         for (int j = 0; j < K; j++) {
             if (i == j) continue;
 
-            float Mij = rmsd[centroids[i] * N_frames + centroids[j]];
+            float Mij = getRMSD(centroids[i], centroids[j], rmsd, N_frames);
             if (Mij > 0.0f) {
                 float Rij = (S[i] + S[j]) / Mij;
                 maxR = std::max(maxR, Rij);

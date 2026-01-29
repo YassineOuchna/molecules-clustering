@@ -45,3 +45,8 @@ float runKMedoidsInit(int N_frames, int K, const float* rmsdHost,
 
 // Run random clustering and return DB index
 float runRandomClusterAssignment(int N_frames, int K, const float* rmsdHost);
+
+__host__ __device__
+inline int upper_triangle_index(int i, int j, int N) {
+    return i * N - (i*(i+1))/2 + (j - i - 1);
+}

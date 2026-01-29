@@ -1,5 +1,6 @@
 // gpu.cu - Complete corrected version
 #include "gpu.cuh"
+#include "utils.cuh"
 #include <cuda_runtime.h>
 
 __device__
@@ -120,11 +121,12 @@ void RMSD(
     float* out
 )
 {
+
     int snap = blockIdx.x * blockDim.x + threadIdx.x;
     int ref_idx = blockIdx.y * blockDim.y + threadIdx.y;
 
     // Only compute upper triangle
-    if (snap >= N_frames || ref_idx >= N_frames || snap < ref_idx)
+    if (snap >= N_frames || ref_idx >= N_frames || snap >= ref_idx)
         return;
 
     int block = N_atoms * N_frames;
@@ -279,6 +281,10 @@ void RMSD(
 
     float rmsd = sqrtf(sum2/N_atoms);
 
-    out[ref_idx*N_frames + snap] = rmsd;
-    out[snap*N_frames + ref_idx] = rmsd; // symmetric
+    // ensure i < j
+    if (ref_idx > snap) { size_t t = ref_idx; ref_idx = snap; snap = t; }
+
+    size_t idx = ref_idx * N_frames - (ref_idx * (ref_idx + 1)) / 2 + (snap - ref_idx - 1);
+    out[idx] = rmsd;
+
 }
