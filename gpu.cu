@@ -129,23 +129,38 @@ void RMSD(
     if (snap >= N_frames || ref_idx >= N_frames || ref_idx >= snap)
         return;
 
-    int block = N_atoms * N_frames;
-
-    const float* refx = dst + 0 * block + ref_idx;
-    const float* refy = dst + 1 * block + ref_idx;
-    const float* refz = dst + 2 * block + ref_idx;
-
-    const float* snapx = dst + 0 * block + snap;
-    const float* snapy = dst + 1 * block + snap;
-    const float* snapz = dst + 2 * block + snap;
-
-
     // ----------------- STEP 0: Centroids -----------------
     float cx=0.f, cy=0.f, cz=0.f;
     float sx=0.f, sy=0.f, sz=0.f;
 
     for (int a = 0; a < N_atoms; ++a) {
+        size_t idx_ref_x = 0 * N_atoms * N_frames + a * N_frames + ref_idx;
+        size_t idx_ref_y = 1 * N_atoms * N_frames + a * N_frames + ref_idx;
+        size_t idx_ref_z = 2 * N_atoms * N_frames + a * N_frames + ref_idx;
 
+        size_t idx_snap_x = 0 * N_atoms * N_frames + a * N_frames + snap;
+        size_t idx_snap_y = 1 * N_atoms * N_frames + a * N_frames + snap;
+        size_t idx_snap_z = 2 * N_atoms * N_frames + a * N_frames + snap;
+
+        cx += dst[idx_ref_x];
+        cy += dst[idx_ref_y];
+        cz += dst[idx_ref_z];
+
+        sx += dst[idx_snap_x];
+        sy += dst[idx_snap_y];
+        sz += dst[idx_snap_z];
+    }
+
+    cx /= N_atoms; cy /= N_atoms; cz /= N_atoms;
+    sx /= N_atoms; sy /= N_atoms; sz /= N_atoms;
+
+    // ----------------- STEP 1: Correlation matrix A -----------------
+    float a00=0.f, a01=0.f, a02=0.f;
+    float a10=0.f, a11=0.f, a12=0.f;
+    float a20=0.f, a21=0.f, a22=0.f;
+
+    for (int a = 0; a < N_atoms; ++a)
+    {
         size_t idx_ref_x = 0 * N_atoms * N_frames + a * N_frames + ref_idx;
         size_t idx_ref_y = 1 * N_atoms * N_frames + a * N_frames + ref_idx;
         size_t idx_ref_z = 2 * N_atoms * N_frames + a * N_frames + ref_idx;
@@ -167,29 +182,6 @@ void RMSD(
         a20 += rz*sxv; a21 += rz*syv; a22 += rz*szv;
     }
 
-    cx/=N_atoms; cy/=N_atoms; cz/=N_atoms;
-    sx/=N_atoms; sy/=N_atoms; sz/=N_atoms;
-
-
-    // ----------------- STEP 1: Correlation matrix A -----------------
-    float a00=0,a01=0,a02=0,a10=0,a11=0,a12=0,a20=0,a21=0,a22=0;
-
-    for (int a=0;a<N_atoms;a++)
-    {
-        int idx = a * N_frames;
-
-        float rx = refx[idx] - cx;
-        float ry = refy[idx] - cy;
-        float rz = refz[idx] - cz;
-
-        float sxv = snapx[idx] - sx;
-        float syv = snapy[idx] - sy;
-        float szv = snapz[idx] - sz;
-
-        a00 += rx*sxv; a01 += rx*syv; a02 += rx*szv;
-        a10 += ry*sxv; a11 += ry*syv; a12 += ry*szv;
-        a20 += rz*sxv; a21 += rz*syv; a22 += rz*szv;
-    }
 
     // ----------------- STEP 2: M = A^T * A -----------------
     float m00 = a00*a00 + a10*a10 + a20*a20;
