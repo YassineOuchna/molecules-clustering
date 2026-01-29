@@ -86,7 +86,7 @@ int main() {
     size_t size_rmsd  = rmsd_elems * sizeof(float);
     float* rmsd = nullptr;
     CUDA_CHECK(cudaMalloc(&rmsd, size_rmsd));
-
+    CUDA_CHECK(cudaMemset(rmsd, 0, size_rmsd));
     
     std::cout << "Allocated " << (size_rmsd / (1024.0*1024.0)) 
               << " MB for RMSD matrix" << std::endl;
@@ -99,6 +99,9 @@ int main() {
     float t_kernel = 0.f;
     CUDA_CHECK(cudaEventRecord(evStart));
     RMSD<<<blocks, threads>>>(frameGPU, N_frames, N_atoms, rmsd);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaFree(frameGPU));
 
     CUDA_CHECK(cudaEventRecord(evStop));
 
@@ -112,14 +115,6 @@ int main() {
     float t_d2h = 0.f;
 
     float* rmsdHost = new float[rmsd_elems];
-    CUDA_CHECK(cudaEventRecord(evStart));
-    CUDA_CHECK(cudaMemcpy(rmsdHost, rmsd, rmsd_elems * sizeof(float),
-                        cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaEventRecord(evStop));
-    CUDA_CHECK(cudaEventSynchronize(evStop));
-    CUDA_CHECK(cudaEventElapsedTime(&t_d2h, evStart, evStop));
-
-
     CUDA_CHECK(cudaEventRecord(evStart));
     CUDA_CHECK(cudaMemcpy(rmsdHost, rmsd, size_rmsd, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaEventRecord(evStop));
@@ -338,7 +333,6 @@ int main() {
     delete[] rmsdHost;
     delete[] final_centroids;
     delete[] final_clusters;
-    CUDA_CHECK(cudaFree(frameGPU));
     CUDA_CHECK(cudaFree(rmsd));
 
     CUDA_CHECK(cudaEventRecord(evTotalStop));
@@ -362,7 +356,7 @@ int main() {
     CUDA_CHECK(cudaEventDestroy(evStop));
     CUDA_CHECK(cudaEventDestroy(evTotalStart));
     CUDA_CHECK(cudaEventDestroy(evTotalStop));
-
+    CUDA_CHECK(cudaDeviceReset());
 
     return 0;
 }
