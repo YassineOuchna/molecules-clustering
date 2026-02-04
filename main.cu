@@ -42,6 +42,7 @@ int main() {
     CUDA_CHECK(cudaEventCreate(&evTotalStart));
     CUDA_CHECK(cudaEventCreate(&evTotalStop));
 
+    // TODO: parsing arguments
     const int MAX_ITER = 50;
     const int K_MIN = 2;
     const int K_MAX = 50;
@@ -60,22 +61,22 @@ int main() {
               << N_atoms << " atoms each" << std::endl;
 
     // Load and reorder into X,Y,Z blocks
-    float* frame = file.loadData(N_frames);
-    file.reorderByLine(frame, N_frames);
+    float* reordered_file_host = file.loadData(N_frames);
+    file.reorderByLine(reordered_file_host, N_frames);
 
     size_t total_size = N_frames * N_atoms * N_dims * sizeof(float);    
 
     // Copy reordered CPU → GPU
-    float* frameGPU;
-    CUDA_CHECK(cudaMalloc(&frameGPU, total_size));
+    float* reordered_file;
+    CUDA_CHECK(cudaMalloc(&reordered_file, total_size));
     CUDA_CHECK(cudaEventRecord(evTotalStart));
 
-    float t_h2d = 0.f;
+    float t_transfer_host_to_device = 0.f;
     CUDA_CHECK(cudaEventRecord(evStart));
-    CUDA_CHECK(cudaMemcpy(frameGPU, frame, total_size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(reordered_file, reordered_file_host, total_size, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaEventRecord(evStop));
     CUDA_CHECK(cudaEventSynchronize(evStop));
-    CUDA_CHECK(cudaEventElapsedTime(&t_h2d, evStart, evStop));
+    CUDA_CHECK(cudaEventElapsedTime(&t_transfer_host_to_device, evStart, evStop));
 
 
     std::cout << "Copied " << (total_size / (1024.0*1024.0)) 
@@ -98,10 +99,10 @@ int main() {
     std::cout << "\nKernel Start" << std::endl;
     float t_kernel = 0.f;
     CUDA_CHECK(cudaEventRecord(evStart));
-    RMSD<<<blocks, threads>>>(frameGPU, N_frames, N_atoms, rmsd);
+    RMSD<<<blocks, threads>>>(reordered_file, N_frames, N_atoms, rmsd);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaFree(frameGPU));
+    CUDA_CHECK(cudaFree(reordered_file));
 
     CUDA_CHECK(cudaEventRecord(evStop));
 
@@ -112,14 +113,14 @@ int main() {
     std::cout << "Kernel Finished" << std::endl;
 
     // Copy RMSD matrix back to host
-    float t_d2h = 0.f;
+    float t_transfer_device_to_host = 0.f;
 
-    float* rmsdHost = new float[rmsd_elems];
+    float* rmsd_host = new float[rmsd_elems];
     CUDA_CHECK(cudaEventRecord(evStart));
-    CUDA_CHECK(cudaMemcpy(rmsdHost, rmsd, size_rmsd, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(rmsd_host, rmsd, size_rmsd, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaEventRecord(evStop));
     CUDA_CHECK(cudaEventSynchronize(evStop));
-    CUDA_CHECK(cudaEventElapsedTime(&t_d2h, evStart, evStop));
+    CUDA_CHECK(cudaEventElapsedTime(&t_transfer_device_to_host, evStart, evStop));
 
     // ==============================================================
     // MAIN ANALYSIS: Scan K from K_MIN to K_MAX
@@ -170,10 +171,10 @@ int main() {
             int* km_centroids   = new int[K];
             int* km_clusters    = new int[N_frames];
 
-            pickKMedoidsPlusPlus(N_frames, K, rmsdHost, init_centroids);
+            pickKMedoidsPlusPlus(N_frames, K, rmsd_host, init_centroids);
 
             float db_km_trial = runKMedoidsInit(
-                N_frames, K, rmsdHost, MAX_ITER,
+                N_frames, K, rmsd_host, MAX_ITER,
                 init_centroids,
                 km_centroids,
                 km_clusters
@@ -185,7 +186,7 @@ int main() {
                 memcpy(best_clusters, km_clusters, N_frames * sizeof(int));
             }
 
-            float db_rand = runRandomClusterAssignment(N_frames, K, rmsdHost);
+            float db_rand = runRandomClusterAssignment(N_frames, K, rmsd_host);
 
             if (db_rand < best_rd_db_km) {
                 best_rd_db_km = db_rand;
@@ -287,10 +288,10 @@ int main() {
     int* final_centroids = new int[optimal_K_db];
     int* final_clusters = new int[N_frames];
     
-    pickKMedoidsPlusPlus(N_frames, optimal_K_db, rmsdHost, final_centroids);
+    pickKMedoidsPlusPlus(N_frames, optimal_K_db, rmsd_host, final_centroids);
 
     float final_db = runKMedoidsInit(
-        N_frames, optimal_K_db, rmsdHost, MAX_ITER,
+        N_frames, optimal_K_db, rmsd_host, MAX_ITER,
         final_centroids,
         final_centroids,
         final_clusters
@@ -329,8 +330,8 @@ int main() {
               << std::endl;
 
     // Cleanup
-    delete[] frame;
-    delete[] rmsdHost;
+    delete[] reordered_file_host;
+    delete[] rmsd_host;
     delete[] final_centroids;
     delete[] final_clusters;
     CUDA_CHECK(cudaFree(rmsd));
@@ -345,9 +346,9 @@ int main() {
     std::cout << "PERFORMANCE" << std::endl;
     std::cout << std::string(70, '=') << std::endl;
 
-    std::cout << "H2D copy time   : " << t_h2d   / 1000.0f << " s" << std::endl;
+    std::cout << "Host to device copy time   : " << t_transfer_host_to_device   / 1000.0f << " s" << std::endl;
     std::cout << "Kernel time     : " << t_kernel / 1000.0f << " s" << std::endl;
-    std::cout << "D2H copy time   : " << t_d2h   / 1000.0f << " s" << std::endl;
+    std::cout << "Device to Host copy time   : " << t_transfer_device_to_host   / 1000.0f << " s" << std::endl;
     std::cout << "Clustering time : " << clustering_time << " s" << std::endl;
     std::cout << "--------------------------------------" << std::endl;
     std::cout << "Total execution: " << total_ms / 1000.0f << " s" << std::endl;
