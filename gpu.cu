@@ -2,6 +2,7 @@
 #include "gpu.cuh"
 #include "utils.cuh"
 #include <cuda_runtime.h>
+#include <math_constants.h>
 
 __device__
 void compute_eigenvector(float m00, float m01, float m02,
@@ -9,9 +10,9 @@ void compute_eigenvector(float m00, float m01, float m02,
                          float lambda, float &x, float &y, float &z)
 {
     // Solve the homogeneous system:
-    // (m00 - lambda)*x1 + m01*x2 + m02*x3 = 0
-    // m01*x1 + (m11 - lambda)*x2 + m12*x3 = 0
-    // m02*x1 + m12*x2 + (m22 - lambda)*x3 = 0
+    // (m00 - lambda)*x + m01*y + m02*z = 0
+    // m01*x + (m11 - lambda)*y + m12*z = 0
+    // m02*x + m12*y + (m22 - lambda)*z = 0
     
     float a00 = m00 - lambda;
     float a01 = m01;
@@ -23,11 +24,11 @@ void compute_eigenvector(float m00, float m01, float m02,
     float a21 = m12;
     float a22 = m22 - lambda;
 
+    
+    // z = 1 and solve by inversing the resulting system
     float b0 = -a02;
     float b1 = -a12;
     float det = a00 * a11 - a01 * a10;
-
-    // z = 1 and solve by inversing the resulting system
     if (fabsf(det) > 1e-8f) {
         x = (b0 * a11 - b1 * a01) / det;
         y = (a00 * b1 - a10 * b0) / det;
@@ -71,7 +72,7 @@ void compute_eigenvector(float m00, float m01, float m02,
     }
 }
 
-// Robust eigenvalue solver using iterative method
+// Analytic eigenvalue solver for symmetric 3x3 matrix
 __device__
 void compute_eigenvalues_symmetric_3x3(float m00, float m01, float m02,
                                        float m11, float m12, float m22,
@@ -104,7 +105,7 @@ void compute_eigenvalues_symmetric_3x3(float m00, float m01, float m02,
     float phi = acosf(det) / 3.0f;
     
     lambda[0] = mean + 2.0f * p * cosf(phi);
-    lambda[2] = mean + 2.0f * p * cosf(phi + (2.0f * 3.14159265358979323846f / 3.0f));
+    lambda[2] = mean + 2.0f * p * cosf(phi + (2.0f * CUDART_PI_F  / 3.0f));
     lambda[1] = 3.0f * mean - lambda[0] - lambda[2];
     
     // Sort
@@ -115,44 +116,44 @@ void compute_eigenvalues_symmetric_3x3(float m00, float m01, float m02,
 
 __global__
 void RMSD(
-    const float* __restrict__ dst,
+    const float* __restrict__ reordered_file_device,
     int N_snapshots,
     int N_atoms,
-    float* out
+    float* rmsd_device
 )
 {
 
-    int snap = blockIdx.x * blockDim.x + threadIdx.x;
+    int snap_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int ref_idx = blockIdx.y * blockDim.y + threadIdx.y;
 
-    // Only compute upper triangle: ref_idx < snap
-    if (snap >= N_snapshots || ref_idx >= N_snapshots || ref_idx >= snap)
+    // Only compute upper triangle: ref_idx < snap_idx
+    if (snap_idx >= N_snapshots || ref_idx >= N_snapshots || ref_idx >= snap_idx)
         return;
 
     // ----------------- STEP 0: Centroids -----------------
-    float cx=0.f, cy=0.f, cz=0.f;
-    float sx=0.f, sy=0.f, sz=0.f;
+    float ref_center_x=0.f, ref_center_y=0.f, ref_center_z=0.f;
+    float snap_center_x=0.f, snap_center_y=0.f, snap_center_z=0.f;
 
     for (int a = 0; a < N_atoms; ++a) {
         size_t idx_ref_x = 0 * N_atoms * N_snapshots + a * N_snapshots + ref_idx;
         size_t idx_ref_y = 1 * N_atoms * N_snapshots + a * N_snapshots + ref_idx;
         size_t idx_ref_z = 2 * N_atoms * N_snapshots + a * N_snapshots + ref_idx;
 
-        size_t idx_snap_x = 0 * N_atoms * N_snapshots + a * N_snapshots + snap;
-        size_t idx_snap_y = 1 * N_atoms * N_snapshots + a * N_snapshots + snap;
-        size_t idx_snap_z = 2 * N_atoms * N_snapshots + a * N_snapshots + snap;
+        size_t idx_snap_x = 0 * N_atoms * N_snapshots + a * N_snapshots + snap_idx;
+        size_t idx_snap_y = 1 * N_atoms * N_snapshots + a * N_snapshots + snap_idx;
+        size_t idx_snap_z = 2 * N_atoms * N_snapshots + a * N_snapshots + snap_idx;
 
-        cx += dst[idx_ref_x];
-        cy += dst[idx_ref_y];
-        cz += dst[idx_ref_z];
+        ref_center_x += reordered_file_device[idx_ref_x];
+        ref_center_y += reordered_file_device[idx_ref_y];
+        ref_center_z += reordered_file_device[idx_ref_z];
 
-        sx += dst[idx_snap_x];
-        sy += dst[idx_snap_y];
-        sz += dst[idx_snap_z];
+        snap_center_x += reordered_file_device[idx_snap_x];
+        snap_center_y += reordered_file_device[idx_snap_y];
+        snap_center_z += reordered_file_device[idx_snap_z];
     }
 
-    cx /= N_atoms; cy /= N_atoms; cz /= N_atoms;
-    sx /= N_atoms; sy /= N_atoms; sz /= N_atoms;
+    ref_center_x /= N_atoms; ref_center_y /= N_atoms; ref_center_z /= N_atoms;
+    snap_center_x /= N_atoms; snap_center_y /= N_atoms; snap_center_z /= N_atoms;
 
     // ----------------- STEP 1: Correlation matrix A -----------------
     float a00=0.f, a01=0.f, a02=0.f;
@@ -165,21 +166,21 @@ void RMSD(
         size_t idx_ref_y = 1 * N_atoms * N_snapshots + a * N_snapshots + ref_idx;
         size_t idx_ref_z = 2 * N_atoms * N_snapshots + a * N_snapshots + ref_idx;
 
-        size_t idx_snap_x = 0 * N_atoms * N_snapshots + a * N_snapshots + snap;
-        size_t idx_snap_y = 1 * N_atoms * N_snapshots + a * N_snapshots + snap;
-        size_t idx_snap_z = 2 * N_atoms * N_snapshots + a * N_snapshots + snap;
+        size_t idx_snap_x = 0 * N_atoms * N_snapshots + a * N_snapshots + snap_idx;
+        size_t idx_snap_y = 1 * N_atoms * N_snapshots + a * N_snapshots + snap_idx;
+        size_t idx_snap_z = 2 * N_atoms * N_snapshots + a * N_snapshots + snap_idx;
 
-        float rx = dst[idx_ref_x] - cx;
-        float ry = dst[idx_ref_y] - cy;
-        float rz = dst[idx_ref_z] - cz;
+        float ref_centered_x = reordered_file_device[idx_ref_x] - ref_center_x;
+        float ref_centered_y = reordered_file_device[idx_ref_y] - ref_center_y;
+        float ref_centered_z = reordered_file_device[idx_ref_z] - ref_center_z;
 
-        float sxv = dst[idx_snap_x] - sx;
-        float syv = dst[idx_snap_y] - sy;
-        float szv = dst[idx_snap_z] - sz;
+        float snap_centered_x = reordered_file_device[idx_snap_x] - snap_center_x;
+        float snap_centered_y = reordered_file_device[idx_snap_y] - snap_center_y;
+        float snap_centered_z = reordered_file_device[idx_snap_z] - snap_center_z;
 
-        a00 += rx*sxv; a01 += rx*syv; a02 += rx*szv;
-        a10 += ry*sxv; a11 += ry*syv; a12 += ry*szv;
-        a20 += rz*sxv; a21 += rz*syv; a22 += rz*szv;
+        a00 += ref_centered_x*snap_centered_x; a01 += ref_centered_x*snap_centered_y; a02 += ref_centered_x*snap_centered_z;
+        a10 += ref_centered_y*snap_centered_x; a11 += ref_centered_y*snap_centered_y; a12 += ref_centered_y*snap_centered_z;
+        a20 += ref_centered_z*snap_centered_x; a21 += ref_centered_z*snap_centered_y; a22 += ref_centered_z*snap_centered_z;
     }
 
 
@@ -259,17 +260,17 @@ void RMSD(
         size_t idx_ref_y = 1 * N_atoms * N_snapshots + a * N_snapshots + ref_idx;
         size_t idx_ref_z = 2 * N_atoms * N_snapshots + a * N_snapshots + ref_idx;
 
-        size_t idx_snap_x = 0 * N_atoms * N_snapshots + a * N_snapshots + snap;
-        size_t idx_snap_y = 1 * N_atoms * N_snapshots + a * N_snapshots + snap;
-        size_t idx_snap_z = 2 * N_atoms * N_snapshots + a * N_snapshots + snap;
+        size_t idx_snap_x = 0 * N_atoms * N_snapshots + a * N_snapshots + snap_idx;
+        size_t idx_snap_y = 1 * N_atoms * N_snapshots + a * N_snapshots + snap_idx;
+        size_t idx_snap_z = 2 * N_atoms * N_snapshots + a * N_snapshots + snap_idx;
 
-        float rx = dst[idx_ref_x] - cx;
-        float ry = dst[idx_ref_y] - cy;
-        float rz = dst[idx_ref_z] - cz;
+        float rx = reordered_file_device[idx_ref_x] - ref_center_x;
+        float ry = reordered_file_device[idx_ref_y] - ref_center_y;
+        float rz = reordered_file_device[idx_ref_z] - ref_center_z;
 
-        float sxv = dst[idx_snap_x] - sx;
-        float syv = dst[idx_snap_y] - sy;
-        float szv = dst[idx_snap_z] - sz;
+        float sxv = reordered_file_device[idx_snap_x] - snap_center_x;
+        float syv = reordered_file_device[idx_snap_y] - snap_center_y;
+        float szv = reordered_file_device[idx_snap_z] - snap_center_z;
 
         float RYx = R00*sxv + R01*syv + R02*szv;
         float RYy = R10*sxv + R11*syv + R12*szv;
@@ -285,7 +286,7 @@ void RMSD(
     float rmsd = sqrtf(sum2 / N_atoms);
     size_t idx = (size_t)ref_idx * N_snapshots 
                - ((size_t)ref_idx * ((size_t)ref_idx + 1)) / 2 
-               + (snap - ref_idx - 1);
+               + (snap_idx - ref_idx - 1);
 
-    out[idx] = rmsd;
+    rmsd_device[idx] = rmsd;
 }

@@ -61,19 +61,20 @@ int main() {
               << N_atoms << " atoms each" << std::endl;
 
     // Load and reorder into X,Y,Z blocks
+    // TODO: This part is slow and might be done as preprocessing
     float* reordered_file_host = file.loadData(N_snapshots);
     file.reorderByLine(reordered_file_host, N_snapshots);
 
     size_t total_size = N_snapshots * N_atoms * N_dims * sizeof(float);    
 
     // Copy reordered CPU → GPU
-    float* reordered_file;
-    CUDA_CHECK(cudaMalloc(&reordered_file, total_size));
+    float* reordered_file_device;
+    CUDA_CHECK(cudaMalloc(&reordered_file_device, total_size));
     CUDA_CHECK(cudaEventRecord(evTotalStart));
 
     float t_transfer_host_to_device = 0.f;
     CUDA_CHECK(cudaEventRecord(evStart));
-    CUDA_CHECK(cudaMemcpy(reordered_file, reordered_file_host, total_size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(reordered_file_device, reordered_file_host, total_size, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaEventRecord(evStop));
     CUDA_CHECK(cudaEventSynchronize(evStop));
     CUDA_CHECK(cudaEventElapsedTime(&t_transfer_host_to_device, evStart, evStop));
@@ -85,9 +86,9 @@ int main() {
     // Allocate RMSD matrix
     size_t rmsd_elems = ((size_t)N_snapshots * ((size_t)N_snapshots - 1)) / 2;
     size_t size_rmsd  = rmsd_elems * sizeof(float);
-    float* rmsd = nullptr;
-    CUDA_CHECK(cudaMalloc(&rmsd, size_rmsd));
-    CUDA_CHECK(cudaMemset(rmsd, 0, size_rmsd));
+    float* rmsd_device;
+    CUDA_CHECK(cudaMalloc(&rmsd_device, size_rmsd));
+    CUDA_CHECK(cudaMemset(rmsd_device, 0, size_rmsd));
     
     std::cout << "Allocated " << (size_rmsd / (1024.0*1024.0)) 
               << " MB for RMSD matrix" << std::endl;
@@ -99,10 +100,10 @@ int main() {
     std::cout << "\nKernel Start" << std::endl;
     float t_kernel = 0.f;
     CUDA_CHECK(cudaEventRecord(evStart));
-    RMSD<<<blocks, threads>>>(reordered_file, N_snapshots, N_atoms, rmsd);
+    RMSD<<<blocks, threads>>>(reordered_file_device, N_snapshots, N_atoms, rmsd_device);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaFree(reordered_file));
+    CUDA_CHECK(cudaFree(reordered_file_device));
 
     CUDA_CHECK(cudaEventRecord(evStop));
 
@@ -117,7 +118,7 @@ int main() {
 
     float* rmsd_host = new float[rmsd_elems];
     CUDA_CHECK(cudaEventRecord(evStart));
-    CUDA_CHECK(cudaMemcpy(rmsd_host, rmsd, size_rmsd, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(rmsd_host, rmsd_device, size_rmsd, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaEventRecord(evStop));
     CUDA_CHECK(cudaEventSynchronize(evStop));
     CUDA_CHECK(cudaEventElapsedTime(&t_transfer_device_to_host, evStart, evStop));
@@ -334,7 +335,7 @@ int main() {
     delete[] rmsd_host;
     delete[] final_centroids;
     delete[] final_clusters;
-    CUDA_CHECK(cudaFree(rmsd));
+    CUDA_CHECK(cudaFree(rmsd_device));
 
     CUDA_CHECK(cudaEventRecord(evTotalStop));
     CUDA_CHECK(cudaEventSynchronize(evTotalStop));
