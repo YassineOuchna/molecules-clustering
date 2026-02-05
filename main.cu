@@ -40,11 +40,11 @@ int main(int argc, char** args) {
     }
     FileUtils file(file_name); 
 
-    size_t N_frames = 10000;
+    size_t N_frames = 99000;
     size_t N_atoms = file.getN_atoms();
     size_t N_dims = file.getN_dims();
 
-    size_t MAX_DATA_CHUNK_SIZE = 5000; // In MB
+    size_t MAX_DATA_CHUNK_SIZE = 24500; // In MB
 
     size_t NB_FRAMES_CHUNK = get_chunk_frame_nb(MAX_DATA_CHUNK_SIZE, N_atoms, N_dims, N_frames);
     size_t SQ_SUBMATRIX_SIZE = NB_FRAMES_CHUNK / 2;

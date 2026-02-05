@@ -20,10 +20,24 @@ int col_index_parcours(int i, int bound) {
     return (int) (bound - triangle_read( ((bound+1)*(bound+2)/2) - i - 1 ));
 }
 
-size_t get_chunk_frame_nb(size_t max_cap, size_t N_atoms, size_t N_dims, size_t N_frames) {
-    float delta = std::pow( N_atoms * N_dims, 2) + (4 * (1024*1024) * max_cap / sizeof(float));
-    float result = (0.5) * (((-1) * static_cast<double>(N_atoms) * static_cast<double>(N_dims)) + std::sqrt(delta));
-    return (size_t) result;
+size_t get_chunk_frame_nb(size_t max_cap_MB, size_t N_atoms, size_t N_dims) {
+    // Convert max memory to number of floats
+    double max_floats = static_cast<double>(max_cap_MB) * 1024.0 * 1024.0 / sizeof(float);
+
+    // Quadratic formula: F_tile^2 + 2*(N_atoms*N_dims)*F_tile - 2*max_floats = 0
+    double a = 1.0;
+    double b = 2.0 * static_cast<double>(N_atoms) * static_cast<double>(N_dims);
+    double c = -2.0 * max_floats;
+
+    double delta = b*b - 4.0*a*c;
+    if(delta < 0) {
+        std::cerr << "Error: memory too small for even one frame!" << std::endl;
+        return 0;
+    }
+
+    double F_tile = (-b + std::sqrt(delta)) / (2.0 * a);
+
+    return static_cast<size_t>(std::floor(F_tile));
 }
 
 void measure_seconds(const chrono_type& start, const std::string& measurement) {
