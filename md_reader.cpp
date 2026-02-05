@@ -41,7 +41,6 @@ TrajectoryInfo write_trajectory_to_file(const std::string& trajectory_file,
             if (info.n_snapshots == 0) {
                 info.n_atoms = positions.size();
                 std::cout << "  Atoms in trajectory: " << info.n_atoms << std::endl;
-                std::cout << "  Atoms in trajectory: " << info.n_atoms << std::endl;
             }
             
             // Verify atom count consistency within trajectory
@@ -70,7 +69,6 @@ TrajectoryInfo write_trajectory_to_file(const std::string& trajectory_file,
         std::cout << "  Completed: " << info.n_snapshots << " snapshots" << std::endl;
         
     } catch (const chemfiles::Error& e) {
-        throw std::runtime_error("Chemfiles error reading " + trajectory_file + ": " + std::string(e.what()));
         throw std::runtime_error("Chemfiles error reading " + trajectory_file + ": " + std::string(e.what()));
     }
     
@@ -197,12 +195,6 @@ int main() {
         size_t expected_size = 3 * sizeof(size_t) + total_snapshots * n_atoms * 3 * sizeof(float);
         
         std::cout << "File size: " << (file_size / (1024.0 * 1024.0)) << " MB" << std::endl;
-        std::cout << "Expected size: " << (expected_size / (1024.0 * 1024.0)) << " MB" << std::endl;
-        
-        if (file_size != expected_size) {
-            std::cerr << "WARNING: File size mismatch! Data may be corrupted." << std::endl;
-        }
-
         std::cout << "Expected size: " << (expected_size / (1024.0 * 1024.0)) << " MB" << std::endl;
         
         if (file_size != expected_size) {
