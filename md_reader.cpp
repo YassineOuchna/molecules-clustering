@@ -17,17 +17,23 @@
 #include <algorithm>
 #include <filesystem>
 namespace fs = std::filesystem;
+#include <algorithm>
+#include <filesystem>
+namespace fs = std::filesystem;
 
 struct TrajectoryInfo {
     size_t n_snapshots;
     size_t n_atoms;
+    std::streampos data_start_pos;  // Track where data was written
     std::streampos data_start_pos;  // Track where data was written
 };
 
 // Read trajectory and write directly to file (streaming approach)
 TrajectoryInfo write_trajectory_to_file(const std::string& trajectory_file,
                                          const chemfiles::Topology& topology,
+                                         const chemfiles::Topology& topology,
                                          std::ofstream& outfile) {
+    TrajectoryInfo info = {0, 0, outfile.tellp()};
     TrajectoryInfo info = {0, 0, outfile.tellp()};
     
     try {
@@ -40,6 +46,7 @@ TrajectoryInfo write_trajectory_to_file(const std::string& trajectory_file,
             
             if (info.n_snapshots == 0) {
                 info.n_atoms = positions.size();
+                std::cout << "  Atoms in trajectory: " << info.n_atoms << std::endl;
                 std::cout << "  Atoms in trajectory: " << info.n_atoms << std::endl;
             }
             
@@ -70,6 +77,7 @@ TrajectoryInfo write_trajectory_to_file(const std::string& trajectory_file,
         
     } catch (const chemfiles::Error& e) {
         throw std::runtime_error("Chemfiles error reading " + trajectory_file + ": " + std::string(e.what()));
+        throw std::runtime_error("Chemfiles error reading " + trajectory_file + ": " + std::string(e.what()));
     }
     
     return info;
@@ -77,6 +85,12 @@ TrajectoryInfo write_trajectory_to_file(const std::string& trajectory_file,
 
 int main() {
     try {
+        std::string dataset_root = "./dataset";
+        std::string output_file = "output/snapshots_coords_all.bin";
+
+        // Ensure output folder exists
+        fs::create_directories(fs::path(output_file).parent_path());
+
         std::string dataset_root = "./dataset";
         std::string output_file = "output/snapshots_coords_all.bin";
 
@@ -179,7 +193,9 @@ int main() {
         outfile.write(reinterpret_cast<const char*>(&n_atoms), sizeof(size_t));
         outfile.write(reinterpret_cast<const char*>(&n_dims), sizeof(size_t));
 
+
         outfile.close();
+
 
         std::cout << "\n=== Summary ===" << std::endl;
         std::cout << "Total snapshots: " << total_snapshots << std::endl;
@@ -199,10 +215,17 @@ int main() {
             std::cerr << "WARNING: File size mismatch! Data may be corrupted." << std::endl;
         }
 
+        std::cout << "Expected size: " << (expected_size / (1024.0 * 1024.0)) << " MB" << std::endl;
+        
+        if (file_size != expected_size) {
+            std::cerr << "WARNING: File size mismatch! Data may be corrupted." << std::endl;
+        }
+
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }
+
 
     return 0;
 }

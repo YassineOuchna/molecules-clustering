@@ -5,11 +5,11 @@
 #include <vector>
 #include <string.h>
 
-FileUtils::FileUtils() 
-    : file("output/snapshots_coords_all.bin", std::ios::binary) 
+FileUtils::FileUtils(const std::string& file_name) 
+    : file_name(file_name), file(file_name, std::ios::binary) 
 {
     if (!file.is_open()) {
-        throw std::runtime_error("Failed to open output/snapshots_coords_all.bin");
+        throw std::runtime_error("Failed to open file: " + file_name);
     }
 
     // Read header information
@@ -18,7 +18,7 @@ FileUtils::FileUtils()
     file.read(reinterpret_cast<char*>(&n_dims), sizeof(size_t));
 
     if (!file) {
-        throw std::runtime_error("Error reading header from snapshots_coords_all.bin");
+        throw std::runtime_error("Error reading header from" + file_name);
     }
     
     std::cout << "Loaded binary file: " << n_snapshots << " snapshots, " 
@@ -180,6 +180,9 @@ float* FileUtils::loadData(size_t n_subset_snapshots) {
         std::cerr << "Error allocating " << n_elements * sizeof(float) / (1024*1024) 
                   << " MB" << std::endl;
         throw std::bad_alloc();
+        std::cerr << "Error allocating " << n_elements * sizeof(float) / (1024*1024) 
+                  << " MB" << std::endl;
+        throw std::bad_alloc();
     }
 
     // Reset file state and seek to data start
@@ -202,4 +205,122 @@ float* FileUtils::loadData(size_t n_subset_snapshots) {
               << " MB (" << n_subset_snapshots << " snapshots)" << std::endl;
 
     return data;
+}
+
+// Frame :
+// Frame0: [atom0_x, atom0_y, atom0_z, atom1_x, atom1_y, atom1_z, ...]
+// Frame1: [atom0_x, atom0_y, atom0_z, atom1_x, atom1_y, atom1_z, ...]
+// On utilise le fait que la matrice soit triangulaire supérieure, donc col >= row
+float* FileUtils::getFrameSubset(float* frames, int row_begin, int row_end, int col_begin, int col_end, size_t N_frames) {
+
+    float* frame_subset = nullptr;
+
+    // Cas où les frames de la colonne et de la ligne sont les memes.
+    if(row_begin == col_begin) {
+        int subset_size = row_end - row_begin;
+        int frame_arr_size = n_dims * n_atoms;
+        frame_subset = new (std::nothrow) float[subset_size*frame_arr_size];
+
+        for(int i=row_begin; i < row_end; ++i) {
+            for(int j=0; j < frame_arr_size; ++j) {
+                frame_subset[((i - row_begin)*frame_arr_size) + j] = frames[ (i * frame_arr_size) + j ];
+            }
+        }
+    }
+
+    // 2 ensembles disjoints de frames entre les lignes et les colonnes
+    else {
+        int subset_size = (row_end - row_begin) + (col_end - col_begin);
+        int frame_arr_size = n_dims * n_atoms;
+        frame_subset = new (std::nothrow) float[subset_size*frame_arr_size];
+
+        for(int i=row_begin; i < row_end; ++i) {
+            for(int j=0; j < frame_arr_size; ++j) {
+                frame_subset[((i - row_begin)*frame_arr_size) + j] = frames[ (i * frame_arr_size) + j ];
+            }
+        }
+
+        for(int i=col_begin; i < col_end; ++i) {
+            for(int j=0; j < frame_arr_size; ++j) {
+                frame_subset[((i + row_end - row_begin - col_begin)*frame_arr_size) + j] = frames[ (i * frame_arr_size) + j];
+            }
+        }
+
+    }
+
+    return frame_subset;
+}
+
+/*
+* Writes clustering result's centroid and cluster indices into a binary file.
+* These indices are used to read actual molecule shapes 
+* stored in the original dataset file.
+* The file layout is as follows:
+* - Metadata: sizeof(int) bytes storing K | sizeof(int) bytes storing N_frames
+* - Data: K*sizeof(int) bytes storing centroids indices | N_frames*sizeof(int) bytes storing cluster
+* indices of each frame
+*/
+void saveClusters(const int* clusters, int N_frames, const int* centroids, int K) {
+    std::ofstream outFile("output/clusters.bin", std::ios::binary);
+    
+    if (outFile.is_open()) {
+        // metadata
+        outFile.write(reinterpret_cast<const char*>(&K), sizeof(int));
+        outFile.write(reinterpret_cast<const char*>(&N_frames), sizeof(int));
+
+        // Write the arrays
+        outFile.write(reinterpret_cast<const char*>(centroids), K * sizeof(int));
+        outFile.write(reinterpret_cast<const char*>(clusters), N_frames * sizeof(int));
+        
+        outFile.close();
+    }
+
+    std::cout << "Results saved to output/clusters.bin\n";
+}
+
+/*
+* Loads cluster labels from the clusters.bin file.
+* returns a vector<int> of size N_frames that was saved in the file.
+*/
+std::vector<int> loadClusterLabels() {
+    std::ifstream inFile("output/clusters.bin", std::ios::binary);
+    if (!inFile) return {};
+
+    int K, N_frames;
+
+    // Read metadata
+    inFile.read(reinterpret_cast<char*>(&K), sizeof(int));
+    inFile.read(reinterpret_cast<char*>(&N_frames), sizeof(int));
+
+    // Skip centroids
+    inFile.seekg(K * sizeof(int), std::ios::cur);
+
+    // Read labels
+    std::vector<int> labels(N_frames);
+    inFile.read(reinterpret_cast<char*>(labels.data()),
+                N_frames * sizeof(int));
+
+    return labels;
+}
+
+/*
+* Loads cluster centroids from the clusters.bin file.
+* returns a vector<int> of size K that was saved in the file.
+*/
+std::vector<int> loadClusterCentroids() {
+    std::ifstream inFile("output/clusters.bin", std::ios::binary);
+    if (!inFile) return {};
+
+    int K, N_frames;
+
+    // Read metadata
+    inFile.read(reinterpret_cast<char*>(&K), sizeof(int));
+    inFile.read(reinterpret_cast<char*>(&N_frames), sizeof(int));
+
+    // Read centroids
+    std::vector<int> centroids(K);
+    inFile.read(reinterpret_cast<char*>(centroids.data()),
+                K * sizeof(int));
+
+    return centroids;
 }
