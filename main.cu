@@ -92,6 +92,7 @@ int main(int argc, char** args) {
                   << " | Tile: [" << row_begin << ":" << row_end << ", " 
                   << col_begin << ":" << col_end << "] | Frames: " << nb_frames_subset << std::endl;
 
+        // TODO: Move reorderByLine in .bin and refractor getFrameSubset
         float* frame_subset = file.getFrameSubset(frame, row_begin, row_end, col_begin, col_end, N_frames);
         file.reorderByLine(frame_subset, nb_frames_subset);
 
