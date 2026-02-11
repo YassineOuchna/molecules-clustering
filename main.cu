@@ -40,11 +40,11 @@ int main(int argc, char** args) {
     }
     FileUtils file(file_name); 
 
-    size_t N_frames = 40000;
+    size_t N_frames = 20000;
     size_t N_atoms = file.getN_atoms();
     size_t N_dims = file.getN_dims();
 
-    size_t MAX_DATA_CHUNK_SIZE = 24500; // In MB
+    size_t MAX_DATA_CHUNK_SIZE = 500; // In MB
 
     size_t NB_FRAMES_CHUNK = get_chunk_frame_nb(MAX_DATA_CHUNK_SIZE, N_atoms, N_dims);
     size_t SQ_SUBMATRIX_SIZE = get_optimal_tile_size(MAX_DATA_CHUNK_SIZE, N_atoms, N_dims, N_frames);
@@ -88,7 +88,7 @@ int main(int argc, char** args) {
             nb_frames_subset = size_col + size_row;
         }
 
-        std::cout << "Iteration " << iter << "/" << RMSD_LOOPS_NEEDED-1 
+        std::cout << "Iteration " << iter + 1 << "/" << RMSD_LOOPS_NEEDED 
                   << " | Tile: [" << row_begin << ":" << row_end << ", " 
                   << col_begin << ":" << col_end << "] | Frames: " << nb_frames_subset << std::endl;
 
