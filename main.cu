@@ -40,7 +40,7 @@ int main(int argc, char** args) {
     }
     FileUtils file(file_name); 
 
-    size_t N_frames = 99000;
+    size_t N_frames = 40000;
     size_t N_atoms = file.getN_atoms();
     size_t N_dims = file.getN_dims();
 
