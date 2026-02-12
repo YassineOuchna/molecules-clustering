@@ -23,9 +23,11 @@ inline void freeOnGPU(float* ptr) {
 
 __global__
 void RMSD(
-    const float* __restrict__ reordered_file_device,   // reordered coordinates: X,Y,Z blocks
-    int N_snapshots,
-    int N_atoms,
+    const float* __restrict__ references,
+    const float* __restrict__ targets,
+    size_t N_references_subset,
+    size_t N_targets_subset,
+    size_t N_atoms,
     float* rmsd_device
 );
 

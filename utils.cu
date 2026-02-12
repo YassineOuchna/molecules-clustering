@@ -20,14 +20,33 @@ int col_index_parcours(int i, int bound) {
     return (int) (bound - triangle_read( ((bound+1)*(bound+2)/2) - i - 1 ));
 }
 
+void update_row_col(size_t idx, const size_t N_CHUNKS_PER_ROW, size_t& row, size_t& col)
+{
+    // total number of elements in packed upper triangle
+    size_t total = N_CHUNKS_PER_ROW * (N_CHUNKS_PER_ROW + 1) / 2;
+
+    if (idx >= total) return; // out of range
+
+    col = static_cast<size_t>((std::sqrt(8.0 * idx + 1) - 1) * 0.5);
+
+    // safety clamp (floating precision)
+    if (col >= N_CHUNKS_PER_ROW) col = N_CHUNKS_PER_ROW - 1;
+
+    size_t start = col * (col + 1) / 2;
+    row = idx - start;
+}
+
 size_t get_chunk_frame_nb(size_t max_cap_MB, size_t N_atoms, size_t N_dims) {
+    // Note, we allocate 2 * N_frames * N_atoms * N_dims floats for the coordinates
+    // We also allocate the RMSD matrix which is N_frames*N_frames floats
+
     // Convert max memory to number of floats
     double max_floats = static_cast<double>(max_cap_MB) * 1024.0 * 1024.0 / sizeof(float);
 
-    // Quadratic formula: F_tile^2 + 2*(N_atoms*N_dims)*F_tile - 2*max_floats = 0
+    // Quadratic formula: F_tile^2 + 2*(N_atoms*N_dims)*F_tile - max_floats = 0
     double a = 1.0;
     double b = 2.0 * static_cast<double>(N_atoms) * static_cast<double>(N_dims);
-    double c = -2.0 * max_floats;
+    double c = - max_floats;
 
     double delta = b*b - 4.0*a*c;
     if(delta < 0) {
@@ -36,8 +55,10 @@ size_t get_chunk_frame_nb(size_t max_cap_MB, size_t N_atoms, size_t N_dims) {
     }
 
     double F_tile = (-b + std::sqrt(delta)) / (2.0 * a);
+    size_t result = static_cast<size_t>(std::floor(F_tile));
+    result -= result % 32; // align to 32 for CUDA efficiency
 
-    return static_cast<size_t>(std::floor(F_tile));
+    return result;
 }
 
 size_t get_optimal_tile_size(size_t max_cap_MB, size_t N_atoms, size_t N_dims, size_t N_frames) {

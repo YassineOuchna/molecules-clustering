@@ -20,10 +20,11 @@ public:
     size_t getN_snapshots() const;
     size_t getN_dims() const;
     std::ifstream& getFile() const;
-    std::vector<float> readSnapshot(size_t snapshot_idx);
-    float* loadData(size_t n_subset_snapshots);
+    
+    void readSnapshotsFastInPlace(size_t start, size_t end, std::vector<float>& result);
+    void extractSnapshotsFastInPlace(size_t start, size_t end, const std::vector<float>& all_data, std::vector<float>& result);
+
     float* getFrameSubset(float* frames, int row_begin, int row_end, int col_begin, int col_end, size_t N_frames);
-    void reorderByLine(float* snapshot_data, const size_t n_subset_snapshots);
 };
 
 std::vector<int> loadClusterLabels();

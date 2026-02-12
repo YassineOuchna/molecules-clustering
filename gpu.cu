@@ -110,15 +110,17 @@ void compute_eigenvalues_symmetric_3x3(float m00, float m01, float m02,
 // RMSD kernel (packed upper triangle)
 // =======================================================
 __global__
-void RMSD(const float* __restrict__ reordered_file_device,
-          int N_snapshots,
-          int N_atoms,
+void RMSD(const float* __restrict__ references,
+          const float* __restrict__ targets,
+          size_t N_references_subset,
+          size_t N_targets_subset,
+          size_t N_atoms,
           float* rmsd_device)
 {
     int snap_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int ref_idx  = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (snap_idx >= N_snapshots || ref_idx >= N_snapshots || ref_idx >= snap_idx)
+    if (snap_idx >= N_targets_subset || ref_idx >= N_references_subset)
         return;
 
     // STEP 0: Compute centroids
@@ -126,13 +128,15 @@ void RMSD(const float* __restrict__ reordered_file_device,
     float scx=0, scy=0, scz=0;
 
     for (int a=0;a<N_atoms;a++) {
-        size_t b = a * N_snapshots;
-        rcx += reordered_file_device[0*N_atoms*N_snapshots + b + ref_idx];
-        rcy += reordered_file_device[1*N_atoms*N_snapshots + b + ref_idx];
-        rcz += reordered_file_device[2*N_atoms*N_snapshots + b + ref_idx];
-        scx += reordered_file_device[0*N_atoms*N_snapshots + b + snap_idx];
-        scy += reordered_file_device[1*N_atoms*N_snapshots + b + snap_idx];
-        scz += reordered_file_device[2*N_atoms*N_snapshots + b + snap_idx];
+        size_t b_references = a * N_references_subset;
+        rcx += references[0*N_atoms*N_references_subset + b_references + ref_idx];
+        rcy += references[1*N_atoms*N_references_subset + b_references + ref_idx];
+        rcz += references[2*N_atoms*N_references_subset + b_references + ref_idx];
+        
+        size_t b_targets = a * N_targets_subset;
+        scx += targets[0*N_atoms*N_targets_subset + b_targets + snap_idx];
+        scy += targets[1*N_atoms*N_targets_subset + b_targets + snap_idx];
+        scz += targets[2*N_atoms*N_targets_subset + b_targets + snap_idx];
     }
 
     rcx/=N_atoms; rcy/=N_atoms; rcz/=N_atoms;
@@ -142,15 +146,17 @@ void RMSD(const float* __restrict__ reordered_file_device,
     float a00=0,a01=0,a02=0,a10=0,a11=0,a12=0,a20=0,a21=0,a22=0;
 
     for (int a=0;a<N_atoms;a++) {
-        size_t b = a * N_snapshots;
+        size_t b_references = a * N_references_subset;
 
-        float rx = reordered_file_device[0*N_atoms*N_snapshots + b + ref_idx]-rcx;
-        float ry = reordered_file_device[1*N_atoms*N_snapshots + b + ref_idx]-rcy;
-        float rz = reordered_file_device[2*N_atoms*N_snapshots + b + ref_idx]-rcz;
+        float rx = references[0*N_atoms*N_references_subset + b_references + ref_idx]-rcx;
+        float ry = references[1*N_atoms*N_references_subset + b_references + ref_idx]-rcy;
+        float rz = references[2*N_atoms*N_references_subset + b_references + ref_idx]-rcz;
 
-        float sx = reordered_file_device[0*N_atoms*N_snapshots + b + snap_idx]-scx;
-        float sy = reordered_file_device[1*N_atoms*N_snapshots + b + snap_idx]-scy;
-        float sz = reordered_file_device[2*N_atoms*N_snapshots + b + snap_idx]-scz;
+        size_t b_targets = a * N_targets_subset;
+
+        float sx = targets[0*N_atoms*N_targets_subset + b_targets + snap_idx]-scx;
+        float sy = targets[1*N_atoms*N_targets_subset + b_targets + snap_idx]-scy;
+        float sz = targets[2*N_atoms*N_targets_subset + b_targets + snap_idx]-scz;
 
         a00+=rx*sx; a01+=rx*sy; a02+=rx*sz;
         a10+=ry*sx; a11+=ry*sy; a12+=ry*sz;
@@ -219,15 +225,15 @@ void RMSD(const float* __restrict__ reordered_file_device,
     // STEP 8: Compute RMSD
     float sum2=0;
     for(int a=0;a<N_atoms;a++){
-        size_t b=a*N_snapshots;
+        size_t b_references = a * N_references_subset;
+        float rx=references[0*N_atoms*N_references_subset+b_references+ref_idx]-rcx;
+        float ry=references[1*N_atoms*N_references_subset+b_references+ref_idx]-rcy;
+        float rz=references[2*N_atoms*N_references_subset+b_references+ref_idx]-rcz;
 
-        float rx=reordered_file_device[0*N_atoms*N_snapshots+b+ref_idx]-rcx;
-        float ry=reordered_file_device[1*N_atoms*N_snapshots+b+ref_idx]-rcy;
-        float rz=reordered_file_device[2*N_atoms*N_snapshots+b+ref_idx]-rcz;
-
-        float sx=reordered_file_device[0*N_atoms*N_snapshots+b+snap_idx]-scx;
-        float sy=reordered_file_device[1*N_atoms*N_snapshots+b+snap_idx]-scy;
-        float sz=reordered_file_device[2*N_atoms*N_snapshots+b+snap_idx]-scz;
+        size_t b_targets = a * N_targets_subset;
+        float sx=targets[0*N_atoms*N_targets_subset+b_targets+snap_idx]-scx;
+        float sy=targets[1*N_atoms*N_targets_subset+b_targets+snap_idx]-scy;
+        float sz=targets[2*N_atoms*N_targets_subset+b_targets+snap_idx]-scz;
 
         float x=R00*sx+R01*sy+R02*sz;
         float y=R10*sx+R11*sy+R12*sz;
@@ -239,10 +245,7 @@ void RMSD(const float* __restrict__ reordered_file_device,
 
     float rmsd=sqrtf(sum2/N_atoms);
 
-    size_t idx = (size_t)ref_idx * N_snapshots
-           - ((size_t)ref_idx * ((size_t)ref_idx + 1)) / 2
-           + (snap_idx - ref_idx - 1);
-
+    size_t idx = ref_idx * N_targets_subset + snap_idx;
     rmsd_device[idx] = rmsd;
 
 }

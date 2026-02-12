@@ -1,6 +1,6 @@
 #pragma once
 
-#include "FileUtils.h"
+#include "FileUtils.hpp"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
@@ -36,8 +36,8 @@ int trinv(int n);
 int triangle_read(int n);
 int sum_k(int k);
 int col_index_parcours(int i, int bound);
+void update_row_col(size_t idx, const size_t N_CHUNKS_PER_ROW, size_t& row, size_t& col);
 size_t get_chunk_frame_nb(size_t max_cap, size_t N_atoms, size_t N_dims);
-size_t get_optimal_tile_size(size_t max_cap_MB, size_t N_atoms, size_t N_dims, size_t N_frames);
 
 // Timing
 void measure_seconds(const chrono_type& start, const std::string& measurement);
