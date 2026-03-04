@@ -24,9 +24,28 @@
 #include <iomanip>
 #include "utils.cuh"
 
+// ─── throughput helper ───────────────────────────────────────────────────────
+// Returns elapsed seconds since `start`.
+static inline double elapsed_s(const chrono_type& start) {
+    return std::chrono::duration<double>(chrono_time::now() - start).count();
+}
+
+// Prints "  <label>: X frames/s  (Y s total)"
+static void print_throughput(const std::string& label,
+                             double seconds,
+                             size_t frames,
+                             int label_width = 35)
+{
+    double fps = (seconds > 0.0) ? frames / seconds : 0.0;
+    std::cout << std::left  << std::setw(label_width) << ("  [" + label + "]")
+              << std::right << std::fixed
+              << std::setw(12) << std::setprecision(0) << fps << " frames/s"
+              << "   (" << std::setprecision(3) << seconds << " s)\n";
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 int main(int argc, char** args) {
 
-    // Time measurements
     chrono_type global_start = chrono_time::now();
 
     std::string file_name;
@@ -39,216 +58,238 @@ int main(int argc, char** args) {
 
     FileUtils file(file_name); 
 
-    size_t N_frames = 99000;
+    size_t N_frames = 10000;
     size_t N_atoms  = file.getN_atoms();
     size_t N_dims   = file.getN_dims();
 
-    // Load entire dataset into memory once
-    std::vector<float> all_data(N_frames * N_atoms * 3);
-    file.readSnapshotsFastInPlace(0, N_frames - 1, all_data);
-    std::cout << "Loaded " << N_frames * N_atoms * N_dims * sizeof(float) / (1024*1024) << " MiB into CPU RAM." << std::endl;
+    // ── Read .bin file ────────────────────────────────────────────────────────
+    std::cout << "\n" << std::string(70, '=') << "\n";
+    std::cout << "LOADING BINARY FILE\n";
+    std::cout << std::string(70, '=') << "\n";
 
-    const size_t MAX_DATA_CHUNK_SIZE = 23000; // In MB
-    const size_t NB_FRAMES_PER_CHUNK = get_chunk_frame_nb(MAX_DATA_CHUNK_SIZE, N_atoms, N_dims);
-    const size_t NB_ROW_ITERATIONS = (size_t) std::ceil((double)N_frames / NB_FRAMES_PER_CHUNK);
-    const size_t RMSD_LOOPS_NEEDED = NB_ROW_ITERATIONS * (NB_ROW_ITERATIONS + 1) / 2;
+    std::vector<float> all_data(N_frames * N_atoms * 3);
+
+    chrono_type t_read = chrono_time::now();
+    file.readSnapshotsFastInPlace(0, N_frames - 1, all_data);
+    double read_s = elapsed_s(t_read);
+
+    std::cout << "Loaded " << N_frames * N_atoms * N_dims * sizeof(float) / (1024*1024)
+              << " MiB into CPU RAM.\n";
+    print_throughput("Read .bin", read_s, N_frames);
+
+    // ── Chunk sizing ──────────────────────────────────────────────────────────
+    const size_t MAX_DATA_CHUNK_SIZE  = 300; // MB
+    const size_t NB_FRAMES_PER_CHUNK  = get_chunk_frame_nb(MAX_DATA_CHUNK_SIZE, N_atoms, N_dims);
+    const size_t NB_ROW_ITERATIONS    = (size_t)std::ceil((double)N_frames / NB_FRAMES_PER_CHUNK);
+    const size_t RMSD_LOOPS_NEEDED    = NB_ROW_ITERATIONS * (NB_ROW_ITERATIONS + 1) / 2;
 
     std::cout << "Max frames per chunk: " << NB_FRAMES_PER_CHUNK << "\n";
-    std::cout << "Number of RMSD iterations: " << RMSD_LOOPS_NEEDED << std::endl;
+    std::cout << "Number of RMSD iterations: " << RMSD_LOOPS_NEEDED << "\n";
 
-    // Allocate PACKED upper triangle matrix
-    size_t rmsd_all_size = N_frames * N_frames;
-    float* rmsdHostAll = new float[rmsd_all_size];
+    // ── Allocations ───────────────────────────────────────────────────────────
+    size_t rmsd_all_size   = N_frames * N_frames;
+    float* rmsdHostAll     = new float[rmsd_all_size];
 
     size_t rmsd_chunk_size = NB_FRAMES_PER_CHUNK * NB_FRAMES_PER_CHUNK;
-    float* rmsdHostChunk = new float[rmsd_chunk_size];
-
-    size_t iter = 0;
+    float* rmsdHostChunk   = new float[rmsd_chunk_size];
 
     std::vector<float> references_coordinates;
     std::vector<float> targets_coordinates;
 
-    // ALLOCATING TO GPU
     float* d_references = nullptr;
-    float* d_targets = nullptr;
-    float* d_rmsd = nullptr;
+    float* d_targets    = nullptr;
+    float* d_rmsd       = nullptr;
 
-    // You can allocate references/targets once as maximum possible chunk
     CHECK_SUCCESS(cudaMalloc(&d_references, NB_FRAMES_PER_CHUNK * N_atoms * 3 * sizeof(float)), "Allocating memory for references");
-    CHECK_SUCCESS(cudaMalloc(&d_targets, NB_FRAMES_PER_CHUNK * N_atoms * 3 * sizeof(float)), "Allocating memory for targets");
-    CHECK_SUCCESS(cudaMalloc(&d_rmsd, NB_FRAMES_PER_CHUNK * NB_FRAMES_PER_CHUNK * sizeof(float)), "Allocating rmsd vector on GPU");
+    CHECK_SUCCESS(cudaMalloc(&d_targets,    NB_FRAMES_PER_CHUNK * N_atoms * 3 * sizeof(float)), "Allocating memory for targets");
+    CHECK_SUCCESS(cudaMalloc(&d_rmsd,       NB_FRAMES_PER_CHUNK * NB_FRAMES_PER_CHUNK * sizeof(float)), "Allocating rmsd vector on GPU");
 
-    dim3 threads(16,16);
+    dim3 threads(16, 16);
     size_t size_rmsd = NB_FRAMES_PER_CHUNK * NB_FRAMES_PER_CHUNK * sizeof(float);
 
-    std::cout << "\n" << std::string(70, '=') << std::endl; std::cout << "RMSD COMPUTATION START" << std::endl; std::cout << std::string(70, '=') << std::endl;
+    // ── Accumulators for aggregate throughput ─────────────────────────────────
+    double total_extract_s = 0.0;
+    double total_kernel_s  = 0.0;
+    size_t total_rmsd_pairs = 0;   // each pair (ref, target) is one "computation"
+
+    size_t iter = 0;
+
+    std::cout << "\n" << std::string(70, '=') << "\n";
+    std::cout << "RMSD COMPUTATION START\n";
+    std::cout << std::string(70, '=') << "\n";
+
     for (size_t row = 0; row < NB_ROW_ITERATIONS; ++row) {
         size_t start_row = row * NB_FRAMES_PER_CHUNK;
         size_t stop_row  = std::min(start_row + NB_FRAMES_PER_CHUNK, N_frames);
-        
-        file.extractSnapshotsFastInPlace(start_row, stop_row, all_data, references_coordinates);
-        CHECK_SUCCESS(cudaMemcpy(d_references, references_coordinates.data(), references_coordinates.size() * sizeof(float), cudaMemcpyHostToDevice), "Copying References on GPU");
+        const size_t nb_ref = stop_row - start_row;
 
-        const size_t nb_frames_subset_references = stop_row-start_row;
+        // ── Extract references chunk ──────────────────────────────────────────
+        chrono_type t_extract_ref = chrono_time::now();
+        file.extractSnapshotsFastInPlace(start_row, stop_row, all_data, references_coordinates);
+        total_extract_s += elapsed_s(t_extract_ref);
+
+        CHECK_SUCCESS(cudaMemcpy(d_references, references_coordinates.data(),
+                                 references_coordinates.size() * sizeof(float),
+                                 cudaMemcpyHostToDevice), "Copying References on GPU");
 
         for (size_t col = row; col < NB_ROW_ITERATIONS; ++col) {
             size_t start_col = col * NB_FRAMES_PER_CHUNK;
             size_t stop_col  = std::min(start_col + NB_FRAMES_PER_CHUNK, N_frames);
-            
-            std::cout << "Iteration " << ++iter << "/" << RMSD_LOOPS_NEEDED
-                      << ", Row [" << start_row << "," << stop_row << ")"
-                      << ", Col [" << start_col << "," << stop_col << ")\n";
+            const size_t nb_tgt = stop_col - start_col;
 
+            std::cout << "\nIteration " << ++iter << "/" << RMSD_LOOPS_NEEDED
+                      << "  Row [" << start_row << "," << stop_row << ")"
+                      << "  Col [" << start_col << "," << stop_col << ")\n";
+
+            // ── Extract targets chunk ─────────────────────────────────────────
+            chrono_type t_extract_tgt = chrono_time::now();
             file.extractSnapshotsFastInPlace(start_col, stop_col, all_data, targets_coordinates);
-            CHECK_SUCCESS(cudaMemcpy(d_targets, targets_coordinates.data(), targets_coordinates.size() * sizeof(float), cudaMemcpyHostToDevice), "Copying Targets on GPU");
+            double ext_s = elapsed_s(t_extract_tgt);
+            total_extract_s += ext_s;
+            print_throughput("Extract targets chunk", ext_s, nb_tgt);
 
-            const size_t nb_frames_subset_targets = stop_col-start_col;
+            CHECK_SUCCESS(cudaMemcpy(d_targets, targets_coordinates.data(),
+                                     targets_coordinates.size() * sizeof(float),
+                                     cudaMemcpyHostToDevice), "Copying Targets on GPU");
 
-            dim3 blocks((nb_frames_subset_targets    + threads.x - 1) / threads.x, 
-                        (nb_frames_subset_references + threads.y - 1) / threads.y);
+            // ── RMSD kernel ───────────────────────────────────────────────────
+            dim3 blocks((nb_tgt + threads.x - 1) / threads.x,
+                        (nb_ref + threads.y - 1) / threads.y);
 
             CHECK_SUCCESS(cudaDeviceSynchronize(), "Ready to launch RMSD Kernel");
 
+            chrono_type t_kernel = chrono_time::now();
             RMSD<<<blocks, threads>>>(
-                d_references,
-                d_targets,
-                nb_frames_subset_references,
-                nb_frames_subset_targets,
-                N_atoms,
+                d_references, d_targets,
+                nb_ref, nb_tgt, N_atoms,
                 d_rmsd
             );
             CHECK_SUCCESS(cudaDeviceSynchronize(), "RMSD Kernel");
-            CHECK_SUCCESS(cudaMemcpy(rmsdHostChunk, d_rmsd, size_rmsd, cudaMemcpyDeviceToHost), "Copying RMSD chunk to CPU");
-            
-            // Copy chunk to all 
-            for(size_t i = 0; i < nb_frames_subset_references; ++i) {
-                for(size_t j = 0; j < nb_frames_subset_targets; ++j) {
+            double kern_s = elapsed_s(t_kernel);
+            total_kernel_s  += kern_s;
+            total_rmsd_pairs += nb_ref * nb_tgt;
+
+            // Report: each thread computes one (ref, target) RMSD — so
+            // "frames/s" here means RMSD pairs evaluated per second.
+            print_throughput("RMSD kernel (pairs/s)", kern_s, nb_ref * nb_tgt);
+
+            CHECK_SUCCESS(cudaMemcpy(rmsdHostChunk, d_rmsd, size_rmsd,
+                                     cudaMemcpyDeviceToHost), "Copying RMSD chunk to CPU");
+
+            // ── Scatter chunk into full matrix ────────────────────────────────
+            for (size_t i = 0; i < nb_ref; ++i) {
+                for (size_t j = 0; j < nb_tgt; ++j) {
                     size_t global_row = start_row + i;
                     size_t global_col = start_col + j;
-                    size_t chunk_idx = i * nb_frames_subset_targets + j;  // Match kernel layout
+                    size_t chunk_idx  = i * nb_tgt + j;
                     size_t global_idx = global_row * N_frames + global_col;
-                    
                     rmsdHostAll[global_idx] = rmsdHostChunk[chunk_idx];
                 }
             }
         }
     }
 
+    // ── Aggregate RMSD throughput ─────────────────────────────────────────────
+    std::cout << "\n" << std::string(70, '-') << "\n";
+    std::cout << "RMSD PHASE SUMMARY\n";
+    print_throughput("Extract (all chunks, avg)", total_extract_s, N_frames);
+    print_throughput("Kernel  (all chunks, pairs/s)", total_kernel_s, total_rmsd_pairs);
+
     CHECK_SUCCESS(cudaFree(d_references), "Freeing References on GPU");
-    CHECK_SUCCESS(cudaFree(d_rmsd), "Freeing RMSD vector on GPU");
-    CHECK_SUCCESS(cudaFree(d_targets), "Freeing Targets on GPU");
+    CHECK_SUCCESS(cudaFree(d_rmsd),       "Freeing RMSD vector on GPU");
+    CHECK_SUCCESS(cudaFree(d_targets),    "Freeing Targets on GPU");
 
-    // Calculate size for upper triangle without diagonal
+    // ── Pack upper triangle ───────────────────────────────────────────────────
     size_t upper_triangle_size = (N_frames * (N_frames - 1)) / 2;
-    float* rmsdUpperTriangle = new float[upper_triangle_size];
+    float* rmsdUpperTriangle   = new float[upper_triangle_size];
 
-    // Copy upper triangle without diagonal
     size_t idx = 0;
-    for (size_t i = 0; i < N_frames; ++i) {
-        for (size_t j = i + 1; j < N_frames; ++j) {
-            size_t global_idx = i * N_frames + j;
-            rmsdUpperTriangle[idx++] = rmsdHostAll[global_idx];
-        }
-    }
+    for (size_t i = 0; i < N_frames; ++i)
+        for (size_t j = i + 1; j < N_frames; ++j)
+            rmsdUpperTriangle[idx++] = rmsdHostAll[i * N_frames + j];
 
-    // Preview of RMSD matrix
+    // ── Debug preview ─────────────────────────────────────────────────────────
     size_t preview = std::min((size_t)5, N_frames);
     std::cout << "\nRMSD matrix (first " << preview << "x" << preview << " submatrix):\n";
     std::cout << std::fixed << std::setprecision(4);
-
-    // Header row
     std::cout << std::setw(10) << "";
-    for (size_t j = 0; j < preview; ++j)
-        std::cout << std::setw(10) << j;
+    for (size_t j = 0; j < preview; ++j) std::cout << std::setw(10) << j;
     std::cout << "\n";
-
-    // Rows
     for (size_t i = 0; i < preview; ++i) {
         std::cout << std::setw(10) << i;
-        for (size_t j = 0; j < preview; ++j) {
-            float val = rmsdHostAll[i * N_frames + j];
-            std::cout << std::setw(10) << val;
-        }
+        for (size_t j = 0; j < preview; ++j)
+            std::cout << std::setw(10) << rmsdHostAll[i * N_frames + j];
         std::cout << "\n";
     }
     std::cout << "\n";
 
     delete[] rmsdHostAll;
-    
-    int K = 10;
+
+    int K        = 10;
     int MAX_ITER = 50;
 
-    std::cout << "\n" << std::string(70, '=') << std::endl;
-    std::cout << "RMSD COMPUTATION COMPLETE" << std::endl;
-    std::cout << std::string(70, '=') << std::endl;
+    std::cout << "\n" << std::string(70, '=') << "\n";
+    std::cout << "RMSD COMPUTATION COMPLETE\n";
+    std::cout << std::string(70, '=') << "\n";
     measure_seconds(global_start, "Total RMSD computation time");
-    std::cout << std::endl;
 
-    // =========================================================================
-    // CLUSTERING
-    // =========================================================================
-    
-    std::cout << std::string(70, '=') << std::endl;
-    std::cout << "K-MEDOIDS CLUSTERING (K=" << K << ", MAX_ITER=" << MAX_ITER << ")" << std::endl;
-    std::cout << std::string(70, '=') << std::endl;
-    
-    chrono_type clustering_loop_start = chrono_time::now();
-    
+    // ── K-medoids ─────────────────────────────────────────────────────────────
+    std::cout << "\n" << std::string(70, '=') << "\n";
+    std::cout << "K-MEDOIDS CLUSTERING (K=" << K << ", MAX_ITER=" << MAX_ITER << ")\n";
+    std::cout << std::string(70, '=') << "\n";
+
     int* centroids = new int[K];
-    int* clusters = new int[N_frames];
+    int* clusters  = new int[N_frames];
 
+    chrono_type t_clust = chrono_time::now();
     float db_index = runKMedoids(N_frames, K, rmsdUpperTriangle, MAX_ITER, centroids, clusters);
-    
-    measure_seconds(clustering_loop_start, "K-medoids clustering time");
-    std::cout << std::endl;
+    double clust_s = elapsed_s(t_clust);
 
-    // =========================================================================
-    // RESULTS
-    // =========================================================================
-    
-    std::cout << std::string(70, '=') << std::endl;
-    std::cout << "CLUSTERING RESULTS" << std::endl;
-    std::cout << std::string(70, '=') << std::endl;
-    
+    // Each frame gets a cluster assignment in every iteration; report frames/s
+    // as N_frames processed per second (averaged over however many iters ran).
+    print_throughput("Cluster assignments (frames/s)", clust_s, N_frames);
+    std::cout << "\n";
+
+    // ── Results ───────────────────────────────────────────────────────────────
+    std::cout << std::string(70, '=') << "\n";
+    std::cout << "CLUSTERING RESULTS\n";
+    std::cout << std::string(70, '=') << "\n";
+
     std::cout << std::fixed << std::setprecision(6);
-    std::cout << "K-medoids Davies-Bouldin Index: " << db_index << std::endl;
-    
-    // Compute and display cluster sizes
+    std::cout << "K-medoids Davies-Bouldin Index: " << db_index << "\n";
+
     std::vector<int> cluster_sizes(K, 0);
-    for (int i = 0; i < N_frames; i++) {
+    for (int i = 0; i < (int)N_frames; i++)
         cluster_sizes[clusters[i]]++;
-    }
-    
-    std::cout << "\nCluster centroids and sizes:" << std::endl;
+
+    std::cout << "\nCluster centroids and sizes:\n";
     for (int k = 0; k < K; k++) {
         float percent = 100.0f * cluster_sizes[k] / N_frames;
-        std::cout << "  Cluster " << std::setw(2) << k 
-                  << " | Centroid: frame " << std::setw(6) << centroids[k] 
-                  << " | Size: " << std::setw(6) << cluster_sizes[k] 
-                  << " (" << std::setw(5) << std::setprecision(2) << percent << "%)" << std::endl;
+        std::cout << "  Cluster " << std::setw(2) << k
+                  << " | Centroid: frame " << std::setw(6) << centroids[k]
+                  << " | Size: "           << std::setw(6) << cluster_sizes[k]
+                  << " (" << std::setw(5) << std::setprecision(2) << percent << "%)\n";
     }
-    
-    // Random clustering baseline
-    std::cout << "\n" << std::string(70, '-') << std::endl;
-    std::cout << "BASELINE COMPARISON" << std::endl;
-    std::cout << std::string(70, '-') << std::endl;
-    
+
+    std::cout << "\n" << std::string(70, '-') << "\n";
+    std::cout << "BASELINE COMPARISON\n";
+    std::cout << std::string(70, '-') << "\n";
+
     float random_db_index = runRandomClustering(N_frames, K, rmsdUpperTriangle);
     std::cout << std::fixed << std::setprecision(6);
-    std::cout << "Random clustering Davies-Bouldin Index: " << random_db_index << std::endl;
-    
+    std::cout << "Random clustering Davies-Bouldin Index: " << random_db_index << "\n";
+
     float improvement = ((random_db_index - db_index) / random_db_index) * 100.0f;
-    std::cout << "\nK-medoids improvement over random: " 
-              << std::setprecision(2) << improvement << "%" 
-              << (improvement > 0 ? " ✓ BETTER" : " ✗ WORSE") << std::endl;
-    
-    std::cout << std::string(70, '=') << std::endl << std::endl;
+    std::cout << "\nK-medoids improvement over random: "
+              << std::setprecision(2) << improvement << "%"
+              << (improvement > 0 ? " ✓ BETTER" : " ✗ WORSE") << "\n";
+
+    std::cout << std::string(70, '=') << "\n\n";
 
     saveClusters(clusters, N_frames, centroids, K);
 
     measure_seconds(global_start, "Total program execution time");
 
-    // Cleanup
     delete[] centroids;
     delete[] rmsdUpperTriangle;
     delete[] clusters;
