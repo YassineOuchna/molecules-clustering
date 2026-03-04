@@ -182,7 +182,7 @@ void FileUtils::readSnapshotsFastInPlace(size_t start, size_t end, std::vector<f
         for (size_t a = 0; a < n_atoms; ++a) {
             for (size_t f = 0; f < n_frames; ++f) {
                 size_t idx_file = a * n_snapshots + (start + f);
-                size_t idx_out  = f * n_atoms * 3 + a * 3 + c;
+		size_t idx_out = c * (n_atoms * n_frames) + a * n_frames + f;
                 result[idx_out] = coord_block[idx_file];
             }
         }

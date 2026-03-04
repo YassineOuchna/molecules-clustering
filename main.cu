@@ -58,7 +58,7 @@ int main(int argc, char** args) {
 
     FileUtils file(file_name); 
 
-    size_t N_frames = 10000;
+    size_t N_frames = 99000;
     size_t N_atoms  = file.getN_atoms();
     size_t N_dims   = file.getN_dims();
 
@@ -78,7 +78,7 @@ int main(int argc, char** args) {
     print_throughput("Read .bin", read_s, N_frames);
 
     // ── Chunk sizing ──────────────────────────────────────────────────────────
-    const size_t MAX_DATA_CHUNK_SIZE  = 300; // MB
+    const size_t MAX_DATA_CHUNK_SIZE  = 12000; // MB
     const size_t NB_FRAMES_PER_CHUNK  = get_chunk_frame_nb(MAX_DATA_CHUNK_SIZE, N_atoms, N_dims);
     const size_t NB_ROW_ITERATIONS    = (size_t)std::ceil((double)N_frames / NB_FRAMES_PER_CHUNK);
     const size_t RMSD_LOOPS_NEEDED    = NB_ROW_ITERATIONS * (NB_ROW_ITERATIONS + 1) / 2;
