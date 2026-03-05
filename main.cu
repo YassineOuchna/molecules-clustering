@@ -25,12 +25,10 @@
 #include "utils.cuh"
 
 // ─── throughput helper ───────────────────────────────────────────────────────
-// Returns elapsed seconds since `start`.
 static inline double elapsed_s(const chrono_type& start) {
     return std::chrono::duration<double>(chrono_time::now() - start).count();
 }
 
-// Prints "  <label>: X frames/s  (Y s total)"
 static void print_throughput(const std::string& label,
                              double seconds,
                              size_t frames,
@@ -56,9 +54,9 @@ int main(int argc, char** args) {
         return 1;
     }
 
-    FileUtils file(file_name); 
+    FileUtils file(file_name);
 
-    size_t N_frames = 99000;
+    size_t N_frames = 90000;
     size_t N_atoms  = file.getN_atoms();
     size_t N_dims   = file.getN_dims();
 
@@ -108,9 +106,9 @@ int main(int argc, char** args) {
     size_t size_rmsd = NB_FRAMES_PER_CHUNK * NB_FRAMES_PER_CHUNK * sizeof(float);
 
     // ── Accumulators for aggregate throughput ─────────────────────────────────
-    double total_extract_s = 0.0;
-    double total_kernel_s  = 0.0;
-    size_t total_rmsd_pairs = 0;   // each pair (ref, target) is one "computation"
+    double total_extract_s  = 0.0;
+    double total_kernel_s   = 0.0;
+    size_t total_rmsd_pairs = 0;
 
     size_t iter = 0;
 
@@ -169,8 +167,6 @@ int main(int argc, char** args) {
             total_kernel_s  += kern_s;
             total_rmsd_pairs += nb_ref * nb_tgt;
 
-            // Report: each thread computes one (ref, target) RMSD — so
-            // "frames/s" here means RMSD pairs evaluated per second.
             print_throughput("RMSD kernel (pairs/s)", kern_s, nb_ref * nb_tgt);
 
             CHECK_SUCCESS(cudaMemcpy(rmsdHostChunk, d_rmsd, size_rmsd,
@@ -185,6 +181,28 @@ int main(int argc, char** args) {
                     size_t global_idx = global_row * N_frames + global_col;
                     rmsdHostAll[global_idx] = rmsdHostChunk[chunk_idx];
                 }
+            }
+
+            // ── Print bottom-right 5x5 corner of first tile ──────────────────
+            if (row == 0 && col == 0) {
+                size_t preview = 5;
+                size_t corner  = nb_ref - preview;
+                std::cout << "\n  Bottom-right 5x5 corner of tile (0,0)"
+                          << " [frames " << corner << ".." << (corner + preview - 1) << "]:\n";
+                std::cout << std::fixed << std::setprecision(4);
+                std::cout << std::setw(10) << "";
+                for (size_t j = 0; j < preview; ++j)
+                    std::cout << std::setw(10) << (corner + j);
+                std::cout << "\n";
+                for (size_t i = 0; i < preview; ++i) {
+                    std::cout << std::setw(10) << (corner + i);
+                    for (size_t j = 0; j < preview; ++j) {
+                        size_t chunk_idx = (corner + i) * nb_tgt + (corner + j);
+                        std::cout << std::setw(10) << rmsdHostChunk[chunk_idx];
+                    }
+                    std::cout << "\n";
+                }
+                std::cout << "\n";
             }
         }
     }
@@ -208,20 +226,25 @@ int main(int argc, char** args) {
         for (size_t j = i + 1; j < N_frames; ++j)
             rmsdUpperTriangle[idx++] = rmsdHostAll[i * N_frames + j];
 
-    // ── Debug preview ─────────────────────────────────────────────────────────
-    size_t preview = std::min((size_t)5, N_frames);
-    std::cout << "\nRMSD matrix (first " << preview << "x" << preview << " submatrix):\n";
+    // ── Debug: 6x6 window centered on bottom-right corner of tile (0,0) ──────
+
+    size_t p = NB_FRAMES_PER_CHUNK;
+    std::cout << "\n  6x6 window around tile (0,0) corner (boundary at frame " << p << "):\n";
     std::cout << std::fixed << std::setprecision(4);
     std::cout << std::setw(10) << "";
-    for (size_t j = 0; j < preview; ++j) std::cout << std::setw(10) << j;
+    for (size_t j = p - 3; j < p + 3; ++j) {
+        std::string lbl = (j == p ? ">" : "") + std::to_string(j);
+        std::cout << std::setw(10) << lbl;
+    }
     std::cout << "\n";
-    for (size_t i = 0; i < preview; ++i) {
-        std::cout << std::setw(10) << i;
-        for (size_t j = 0; j < preview; ++j)
+    for (size_t i = p - 3; i < p + 3; ++i) {
+        std::string lbl = (i == p ? ">" : "") + std::to_string(i);
+        std::cout << std::setw(10) << lbl;
+        for (size_t j = p - 3; j < p + 3; ++j)
             std::cout << std::setw(10) << rmsdHostAll[i * N_frames + j];
         std::cout << "\n";
     }
-    std::cout << "\n";
+    std::cout << "  (> marks first frame of next tile)\n\n";
 
     delete[] rmsdHostAll;
 
@@ -245,8 +268,6 @@ int main(int argc, char** args) {
     float db_index = runKMedoids(N_frames, K, rmsdUpperTriangle, MAX_ITER, centroids, clusters);
     double clust_s = elapsed_s(t_clust);
 
-    // Each frame gets a cluster assignment in every iteration; report frames/s
-    // as N_frames processed per second (averaged over however many iters ran).
     print_throughput("Cluster assignments (frames/s)", clust_s, N_frames);
     std::cout << "\n";
 
