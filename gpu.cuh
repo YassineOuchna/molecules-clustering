@@ -2,6 +2,7 @@
 #define GPU_CUH
 
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
 #include <iostream>
 
 // Simple macro for CUDA errors

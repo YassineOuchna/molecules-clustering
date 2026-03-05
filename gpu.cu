@@ -1,6 +1,7 @@
 #include "gpu.cuh"
 #include "utils.cuh"
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
 #include <math_constants.h>
 
 // =======================================================
@@ -107,8 +108,28 @@ void compute_eigenvalues_symmetric_3x3(float m00, float m01, float m02,
 }
 
 // =======================================================
-// RMSD kernel (packed upper triangle)
+// RMSD kernel  –  one reference cached in shared memory
 // =======================================================
+//
+// Grid / block layout (set in main.cu):
+//   gridDim.x  = N_references_subset          (one block per reference)
+//   gridDim.y  = ceil(N_targets_subset / 128)  (tile targets across y)
+//   blockDim.x = 128, blockDim.y = 1
+//
+// Every thread in a block shares the same blockIdx.x, so they all need the
+// same reference frame.  We load it once into shared memory, broadcast it
+// to all 128 threads, and then each thread independently computes RMSD
+// against its own target.
+//
+// Shared memory layout (bfloat16, passed as dynamic `smem`):
+//   __nv_bfloat16 sref[N_atoms * 3]    – x-block, y-block, z-block
+//   size = N_atoms * 3 * 2 bytes
+//   e.g. 4700 atoms → 28 200 B  (fits comfortably in 48 kB per SM)
+//
+// The reference array in global memory keeps the same interleaved layout as
+// before:  references[dim * N_atoms * N_references_subset + a * N_references_subset + ref_idx]
+// We convert to bfloat16 on load; all arithmetic stays in float32.
+//
 __global__
 void RMSD(const float* __restrict__ references,
           const float* __restrict__ targets,
@@ -117,26 +138,43 @@ void RMSD(const float* __restrict__ references,
           size_t N_atoms,
           float* rmsd_device)
 {
-    int snap_idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int ref_idx  = blockIdx.y * blockDim.y + threadIdx.y;
+    // ── Index mapping ────────────────────────────────────────────────────────
+    int ref_idx  = blockIdx.x;                              // one block = one ref
+    int snap_idx = blockIdx.y * blockDim.x + threadIdx.x;  // targets spread over y
 
-    if (snap_idx >= N_targets_subset || ref_idx >= N_references_subset)
-        return;
+    // ── Shared memory: bfloat16 reference coords ─────────────────────────────
+    // Declared as char[] and recast so we can use a single extern declaration.
+    extern __shared__ __nv_bfloat16 sref[];  // [N_atoms * 3]
+
+    // All threads cooperate to fill sref from global memory.
+    // The reference layout is: dim * N_atoms * N_refs + atom * N_refs + ref_idx
+    // We flatten to a linear bfloat16 store as: dim * N_atoms + atom
+    for (int i = threadIdx.x; i < (int)(N_atoms * 3); i += blockDim.x) {
+        int dim  = i / (int)N_atoms;
+        int atom = i % (int)N_atoms;
+        float val = references[dim * N_atoms * N_references_subset
+                               + atom * N_references_subset
+                               + ref_idx];
+        sref[i] = __float2bfloat16(val);
+    }
+    __syncthreads();  // sref is fully populated before any thread reads it
+
+    // Out-of-bounds targets: still participate in the load above, exit here.
+    if (snap_idx >= (int)N_targets_subset) return;
+
+    // Convenience accessors
+    // REF(dim, atom): expand bfloat16 from shared memory back to float32
+    // TGT(dim, atom): read target directly from global memory
+#define REF(dim, atom) __bfloat162float(sref[(dim) * N_atoms + (atom)])
+#define TGT(dim, atom) targets[(dim)*N_atoms*N_targets_subset + (atom)*N_targets_subset + snap_idx]
 
     // STEP 0: Compute centroids
     float rcx=0, rcy=0, rcz=0;
     float scx=0, scy=0, scz=0;
 
-    for (int a=0;a<N_atoms;a++) {
-        size_t b_references = a * N_references_subset;
-        rcx += references[0*N_atoms*N_references_subset + b_references + ref_idx];
-        rcy += references[1*N_atoms*N_references_subset + b_references + ref_idx];
-        rcz += references[2*N_atoms*N_references_subset + b_references + ref_idx];
-        
-        size_t b_targets = a * N_targets_subset;
-        scx += targets[0*N_atoms*N_targets_subset + b_targets + snap_idx];
-        scy += targets[1*N_atoms*N_targets_subset + b_targets + snap_idx];
-        scz += targets[2*N_atoms*N_targets_subset + b_targets + snap_idx];
+    for (int a=0; a<(int)N_atoms; a++) {
+        rcx += REF(0,a);  rcy += REF(1,a);  rcz += REF(2,a);
+        scx += TGT(0,a);  scy += TGT(1,a);  scz += TGT(2,a);
     }
 
     rcx/=N_atoms; rcy/=N_atoms; rcz/=N_atoms;
@@ -145,22 +183,13 @@ void RMSD(const float* __restrict__ references,
     // STEP 1: Build correlation matrix A
     float a00=0,a01=0,a02=0,a10=0,a11=0,a12=0,a20=0,a21=0,a22=0;
 
-    for (int a=0;a<N_atoms;a++) {
-        size_t b_references = a * N_references_subset;
+    for (int a=0; a<(int)N_atoms; a++) {
+        float rx = REF(0,a)-rcx,  ry = REF(1,a)-rcy,  rz = REF(2,a)-rcz;
+        float sx = TGT(0,a)-scx,  sy = TGT(1,a)-scy,  sz = TGT(2,a)-scz;
 
-        float rx = references[0*N_atoms*N_references_subset + b_references + ref_idx]-rcx;
-        float ry = references[1*N_atoms*N_references_subset + b_references + ref_idx]-rcy;
-        float rz = references[2*N_atoms*N_references_subset + b_references + ref_idx]-rcz;
-
-        size_t b_targets = a * N_targets_subset;
-
-        float sx = targets[0*N_atoms*N_targets_subset + b_targets + snap_idx]-scx;
-        float sy = targets[1*N_atoms*N_targets_subset + b_targets + snap_idx]-scy;
-        float sz = targets[2*N_atoms*N_targets_subset + b_targets + snap_idx]-scz;
-
-	a00+=rx*sx; a01+=rx*sy; a02+=rx*sz;
-	a10+=ry*sx; a11+=ry*sy; a12+=ry*sz;
-	a20+=rz*sx; a21+=rz*sy; a22+=rz*sz;
+        a00+=rx*sx; a01+=rx*sy; a02+=rx*sz;
+        a10+=ry*sx; a11+=ry*sy; a12+=ry*sz;
+        a20+=rz*sx; a21+=rz*sy; a22+=rz*sz;
     }
 
     // Compute M = A^T * A
@@ -180,72 +209,55 @@ void RMSD(const float* __restrict__ references,
     compute_eigenvector(m00,m01,m02,m11,m12,m22,lambda[0],v0.x,v0.y,v0.z);
     compute_eigenvector(m00,m01,m02,m11,m12,m22,lambda[1],v1.x,v1.y,v1.z);
 
-    // STEP 5: Orthonormalize V
+    // STEP 4: Orthonormalize V
     float d=v0.x*v1.x+v0.y*v1.y+v0.z*v1.z;
     v1.x-=d*v0.x; v1.y-=d*v0.y; v1.z-=d*v0.z;
-
     float n=sqrtf(v1.x*v1.x+v1.y*v1.y+v1.z*v1.z);
     if(n>1e-8f){v1.x/=n;v1.y/=n;v1.z/=n;}
-
     v2.x=v0.y*v1.z-v0.z*v1.y;
     v2.y=v0.z*v1.x-v0.x*v1.z;
     v2.z=v0.x*v1.y-v0.y*v1.x;
 
-    // STEP 6: Compute U = A*V
+    // STEP 5: Compute U = A*V
     float av0x=a00*v0.x+a01*v0.y+a02*v0.z;
     float av0y=a10*v0.x+a11*v0.y+a12*v0.z;
     float av0z=a20*v0.x+a21*v0.y+a22*v0.z;
-
     float av1x=a00*v1.x+a01*v1.y+a02*v1.z;
     float av1y=a10*v1.x+a11*v1.y+a12*v1.z;
     float av1z=a20*v1.x+a21*v1.y+a22*v1.z;
 
     float s0=sqrtf(fmaxf(lambda[0],1e-8f));
     float s1=sqrtf(fmaxf(lambda[1],1e-8f));
-
     float3 u0={av0x/s0,av0y/s0,av0z/s0};
     float3 u1={av1x/s1,av1y/s1,av1z/s1};
     float3 u2={u0.y*u1.z-u0.z*u1.y,
                u0.z*u1.x-u0.x*u1.z,
                u0.x*u1.y-u0.y*u1.x};
 
-    // STEP 7: Compute R = U*V^T
+    // STEP 6: Compute R = U*V^T
     float R00=u0.x*v0.x+u1.x*v1.x+u2.x*v2.x;
     float R01=u0.x*v0.y+u1.x*v1.y+u2.x*v2.y;
     float R02=u0.x*v0.z+u1.x*v1.z+u2.x*v2.z;
-
     float R10=u0.y*v0.x+u1.y*v1.x+u2.y*v2.x;
     float R11=u0.y*v0.y+u1.y*v1.y+u2.y*v2.y;
     float R12=u0.y*v0.z+u1.y*v1.z+u2.y*v2.z;
-
     float R20=u0.z*v0.x+u1.z*v1.x+u2.z*v2.x;
     float R21=u0.z*v0.y+u1.z*v1.y+u2.z*v2.y;
     float R22=u0.z*v0.z+u1.z*v1.z+u2.z*v2.z;
 
-    // STEP 8: Compute RMSD
+    // STEP 7: Compute RMSD
     float sum2=0;
-    for(int a=0;a<N_atoms;a++){
-        size_t b_references = a * N_references_subset;
-        float rx=references[0*N_atoms*N_references_subset+b_references+ref_idx]-rcx;
-        float ry=references[1*N_atoms*N_references_subset+b_references+ref_idx]-rcy;
-        float rz=references[2*N_atoms*N_references_subset+b_references+ref_idx]-rcz;
-
-        size_t b_targets = a * N_targets_subset;
-        float sx=targets[0*N_atoms*N_targets_subset+b_targets+snap_idx]-scx;
-        float sy=targets[1*N_atoms*N_targets_subset+b_targets+snap_idx]-scy;
-        float sz=targets[2*N_atoms*N_targets_subset+b_targets+snap_idx]-scz;
-
+    for(int a=0; a<(int)N_atoms; a++){
+        float rx=REF(0,a)-rcx,  ry=REF(1,a)-rcy,  rz=REF(2,a)-rcz;
+        float sx=TGT(0,a)-scx,  sy=TGT(1,a)-scy,  sz=TGT(2,a)-scz;
         float x=R00*sx+R01*sy+R02*sz;
         float y=R10*sx+R11*sy+R12*sz;
         float z=R20*sx+R21*sy+R22*sz;
-
-        float dx=rx-x,dy=ry-y,dz=rz-z;
+        float dx=rx-x, dy=ry-y, dz=rz-z;
         sum2+=dx*dx+dy*dy+dz*dz;
     }
+#undef REF
+#undef TGT
 
-    float rmsd=sqrtf(sum2/N_atoms);
-
-    size_t idx = ref_idx * N_targets_subset + snap_idx;
-    rmsd_device[idx] = rmsd;
-
+    rmsd_device[(size_t)ref_idx * N_targets_subset + snap_idx] = sqrtf(sum2/N_atoms);
 }
