@@ -19,7 +19,6 @@
 #include <vector>
 #include "gpu.cuh"
 #include <cuda_runtime.h>
-#include <cuda_bf16.h>
 #include <stdio.h>
 #include <chrono>
 #include <iomanip>
@@ -103,9 +102,6 @@ int main(int argc, char** args) {
     CHECK_SUCCESS(cudaMalloc(&d_targets,    NB_FRAMES_PER_CHUNK * N_atoms * 3 * sizeof(float)), "Allocating memory for targets");
     CHECK_SUCCESS(cudaMalloc(&d_rmsd,       NB_FRAMES_PER_CHUNK * NB_FRAMES_PER_CHUNK * sizeof(float)), "Allocating rmsd vector on GPU");
 
-    // smem: float32 tile of reference coords  →  TILE * 3 * 4 bytes = 12 kB
-    const size_t TILE = 1024;
-    const size_t smem_bytes = TILE * 3 * sizeof(float);
     dim3 threads(256, 1);
 
 
@@ -163,7 +159,7 @@ int main(int argc, char** args) {
             CHECK_SUCCESS(cudaDeviceSynchronize(), "Ready to launch RMSD Kernel");
 
             chrono_type t_kernel = chrono_time::now();
-            RMSD<<<blocks, threads, smem_bytes>>>(
+            RMSD<<<blocks, threads>>>(
                 d_references, d_targets,
                 nb_ref, nb_tgt, N_atoms,
                 d_rmsd
