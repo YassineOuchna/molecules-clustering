@@ -103,9 +103,9 @@ int main(int argc, char** args) {
     CHECK_SUCCESS(cudaMalloc(&d_targets,    NB_FRAMES_PER_CHUNK * N_atoms * 3 * sizeof(float)), "Allocating memory for targets");
     CHECK_SUCCESS(cudaMalloc(&d_rmsd,       NB_FRAMES_PER_CHUNK * NB_FRAMES_PER_CHUNK * sizeof(float)), "Allocating rmsd vector on GPU");
 
-    // smem: bfloat16 coords for one reference row  →  N_atoms * 3 * 2 bytes
+    // smem: bfloat16 coords for one reference  →  N_atoms * 3 * 2 bytes
     const size_t smem_bytes = N_atoms * 3 * sizeof(__nv_bfloat16);
-    dim3 threads(16, 16);
+    dim3 threads(256, 1);
 
 
     size_t size_rmsd = NB_FRAMES_PER_CHUNK * NB_FRAMES_PER_CHUNK * sizeof(float);
@@ -157,7 +157,7 @@ int main(int argc, char** args) {
 
             // ── RMSD kernel ───────────────────────────────────────────────────
             dim3 blocks((nb_tgt + threads.x - 1) / threads.x,
-                        (nb_ref + threads.y - 1) / threads.y);
+                        nb_ref);
 
             CHECK_SUCCESS(cudaDeviceSynchronize(), "Ready to launch RMSD Kernel");
 
