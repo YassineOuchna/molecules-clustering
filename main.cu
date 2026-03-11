@@ -291,6 +291,42 @@ int main(int argc, char** args) {
             rmsdUpperTriangle[idx++] =
                 rmsdHostAll[i*N_frames+j];
 
+    size_t window = 5;
+
+    std::cout << "\n===== RMSD TILE JUNCTION DEBUG =====\n";
+    std::cout << "Inspecting frames "
+            << NB_FRAMES_PER_CHUNK-window << " .. " << NB_FRAMES_PER_CHUNK+window-1
+            << " around chunk boundary at frame "
+            << NB_FRAMES_PER_CHUNK << "\n\n";
+
+    std::cout << std::fixed << std::setprecision(4);
+
+    // column header
+    std::cout << std::setw(10) << "";
+    for(size_t j=NB_FRAMES_PER_CHUNK-window;j<NB_FRAMES_PER_CHUNK+window;j++)
+    {
+        std::string label = (j==NB_FRAMES_PER_CHUNK ? ">" : "") + std::to_string(j);
+        std::cout << std::setw(10) << label;
+    }
+    std::cout << "\n";
+
+    // rows
+    for(size_t i=NB_FRAMES_PER_CHUNK-window;i<NB_FRAMES_PER_CHUNK+window;i++)
+    {
+        std::string label = (i==NB_FRAMES_PER_CHUNK ? ">" : "") + std::to_string(i);
+        std::cout << std::setw(10) << label;
+
+        for(size_t j=NB_FRAMES_PER_CHUNK-window;j<NB_FRAMES_PER_CHUNK+window;j++)
+        {
+            std::cout << std::setw(10)
+                    << rmsdHostAll[i*N_frames + j];
+        }
+
+        std::cout << "\n";
+    }
+
+    std::cout << "\n( '>' marks the first frame of the next chunk )\n\n";
+
     delete[] rmsdHostAll;
 
     // ============================================================
