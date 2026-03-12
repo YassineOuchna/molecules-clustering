@@ -112,7 +112,7 @@ int main(int argc, char** args)
     const size_t dbg_start = NB_FRAMES_PER_CHUNK - window;
     const size_t dbg_end   = NB_FRAMES_PER_CHUNK + window;  // exclusive
     const size_t dbg_size  = 2 * window;
-    std::vector<float> dbg(dbg_size * dbg_size, NULL);
+    std::vector<float> dbg(dbg_size * dbg_size, -1.0f);
 
     // -----------------------------------------------------------------------
     // RMSD computation
