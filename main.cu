@@ -114,7 +114,7 @@ int main(int argc, char** args)
 
             dim3 blocks((nb_tgt+threads.x-1)/threads.x, (nb_ref+threads.y-1)/threads.y);
             int TILE = std::min(128,(int)N_atoms);
-            // 3 arrays for ref (TILE * threads.y) + 3 arrays for tgt (TILE * threads.x)
+            // ref side: TILE * threads.y entries; tgt side: TILE * threads.x entries
             size_t smem_bytes = (3*TILE*threads.y + 3*TILE*threads.x)*sizeof(float);
 
             auto k0 = chrono_time::now();
