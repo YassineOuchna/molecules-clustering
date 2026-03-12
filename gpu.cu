@@ -44,14 +44,10 @@ void compute_eigenvalues_symmetric_3x3(float m00, float m01, float m02,
     lambda[2] = mean + 2.0f * p * cosf(phi + 2.0f * CUDART_PI_F / 3.0f);
     lambda[1] = 3.0f * mean - lambda[0] - lambda[2];
 
-    if (lambda[0] < lambda[1]) { float t=lambda[0];lambda[0]=lambda[1];lambda[1]=t; }
-    if (lambda[1] < lambda[2]) { float t=lambda[1];lambda[1]=lambda[2];lambda[2]=t; }
-    if (lambda[0] < lambda[1]) { float t=lambda[0];lambda[0]=lambda[1];lambda[1]=t; }
+    if (lambda[0] < lambda[1]) { float t=lambda[0]; lambda[0]=lambda[1]; lambda[1]=t; }
+    if (lambda[1] < lambda[2]) { float t=lambda[1]; lambda[1]=lambda[2]; lambda[2]=t; }
+    if (lambda[0] < lambda[1]) { float t=lambda[0]; lambda[0]=lambda[1]; lambda[1]=t; }
 }
-
-#include "gpu.cuh"
-#include <cuda_runtime.h>
-#include <math_constants.h>
 
 __global__
 void computeCentroidsG(const float* coords,
@@ -91,84 +87,88 @@ void computeCentroidsG(const float* coords,
 }
 
 __global__
-void RMSD(
-    const float* refs,
-    const float* tgts,
-    size_t N_atoms,
-    size_t N_ref,
-    size_t N_tgt,
-    const float* cx_ref,
-    const float* cy_ref,
-    const float* cz_ref,
-    const float* G_ref,
-    const float* cx_tgt,
-    const float* cy_tgt,
-    const float* cz_tgt,
-    const float* G_tgt,
-    float* rmsd)
+void RMSD(const float* refs,
+          const float* tgts,
+          size_t N_atoms,
+          size_t N_ref,
+          size_t N_tgt,
+          const float* cx_ref,
+          const float* cy_ref,
+          const float* cz_ref,
+          const float* G_ref,
+          const float* cx_tgt,
+          const float* cy_tgt,
+          const float* cz_tgt,
+          const float* G_tgt,
+          float* rmsd)
 {
-    extern __shared__ float smem[]; // dynamic shared memory
+    extern __shared__ float smem[];
+    const int TILE = blockDim.x;  // number of atoms per tile
 
-    int TILE = blockDim.x; // atoms per tile along x
-    float* s_ref = smem;                     // 3 * TILE * blockDim.y
-    float* s_tgt = smem + 3 * TILE * blockDim.y;
+    float* s_ref_x = smem;
+    float* s_ref_y = s_ref_x + TILE * blockDim.y;
+    float* s_ref_z = s_ref_y + TILE * blockDim.y;
 
-    int r = blockIdx.y * blockDim.y + threadIdx.y; // reference index
-    int t = blockIdx.x * blockDim.x + threadIdx.x; // target index
+    float* s_tgt_x = s_ref_z + TILE * blockDim.y;
+    float* s_tgt_y = s_tgt_x + TILE * blockDim.y;
+    float* s_tgt_z = s_tgt_y + TILE * blockDim.y;
 
-    if (r >= N_ref || t >= N_tgt) return;
+    int r = blockIdx.y * blockDim.y + threadIdx.y;
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
 
-    float rcx = cx_ref[r], rcy = cy_ref[r], rcz = cz_ref[r];
-    float scx = cx_tgt[t], scy = cy_tgt[t], scz = cz_tgt[t];
+    if(r >= N_ref || t >= N_tgt) return;
 
-    // Initialize cross-covariance
+    float rcx = cx_ref[r];
+    float rcy = cy_ref[r];
+    float rcz = cz_ref[r];
+
+    float scx = cx_tgt[t];
+    float scy = cy_tgt[t];
+    float scz = cz_tgt[t];
+
     float a00=0,a01=0,a02=0;
     float a10=0,a11=0,a12=0;
     float a20=0,a21=0,a22=0;
 
     for(int start=0; start<N_atoms; start+=TILE)
     {
-        int atom_idx = start + threadIdx.x;
-        int tile_end = min(TILE, (int)(N_atoms - start));
+        int idx = start + threadIdx.x;
 
-        // Load references
-        if(atom_idx < N_atoms && r < N_ref) {
-            size_t idx = atom_idx * N_ref + r;
-            s_ref[threadIdx.y*TILE + threadIdx.x]         = refs[0*N_atoms*N_ref + idx] - rcx;
-            s_ref[TILE*blockDim.y + threadIdx.y*TILE + threadIdx.x] = refs[1*N_atoms*N_ref + idx] - rcy;
-            s_ref[2*TILE*blockDim.y + threadIdx.y*TILE + threadIdx.x] = refs[2*N_atoms*N_ref + idx] - rcz;
-        }
+        // load reference atoms into shared memory
+        if(idx < N_atoms)
+        {
+            s_ref_x[threadIdx.x*blockDim.y + threadIdx.y] = refs[0*N_atoms*N_ref + idx*N_ref + r] - rcx;
+            s_ref_y[threadIdx.x*blockDim.y + threadIdx.y] = refs[1*N_atoms*N_ref + idx*N_ref + r] - rcy;
+            s_ref_z[threadIdx.x*blockDim.y + threadIdx.y] = refs[2*N_atoms*N_ref + idx*N_ref + r] - rcz;
 
-        // Load targets
-        if(atom_idx < N_atoms && t < N_tgt) {
-            size_t idx = atom_idx * N_tgt + t;
-            s_tgt[threadIdx.y*TILE + threadIdx.x]         = tgts[0*N_atoms*N_tgt + idx] - scx;
-            s_tgt[TILE*blockDim.y + threadIdx.y*TILE + threadIdx.x] = tgts[1*N_atoms*N_tgt + idx] - scy;
-            s_tgt[2*TILE*blockDim.y + threadIdx.y*TILE + threadIdx.x] = tgts[2*N_atoms*N_tgt + idx] - scz;
+            s_tgt_x[threadIdx.x*blockDim.y + threadIdx.y] = tgts[0*N_atoms*N_tgt + idx*N_tgt + t] - scx;
+            s_tgt_y[threadIdx.x*blockDim.y + threadIdx.y] = tgts[1*N_atoms*N_tgt + idx*N_tgt + t] - scy;
+            s_tgt_z[threadIdx.x*blockDim.y + threadIdx.y] = tgts[2*N_atoms*N_tgt + idx*N_tgt + t] - scz;
         }
 
         __syncthreads();
 
-        // Compute cross-covariance for this tile
-        for(int k=0; k<tile_end; k++)
+        int tile_end = min(TILE, (int)(N_atoms-start));
+
+        for(int k=0;k<tile_end;k++)
         {
-            float rx = s_ref[0*TILE*blockDim.y + threadIdx.y*TILE + k];
-            float ry = s_ref[1*TILE*blockDim.y + threadIdx.y*TILE + k];
-            float rz = s_ref[2*TILE*blockDim.y + threadIdx.y*TILE + k];
+            float rx = s_ref_x[k*blockDim.y + threadIdx.y];
+            float ry = s_ref_y[k*blockDim.y + threadIdx.y];
+            float rz = s_ref_z[k*blockDim.y + threadIdx.y];
 
-            float sx = s_tgt[0*TILE*blockDim.y + threadIdx.x*TILE + k];
-            float sy = s_tgt[1*TILE*blockDim.y + threadIdx.x*TILE + k];
-            float sz = s_tgt[2*TILE*blockDim.y + threadIdx.x*TILE + k];
+            float sx = s_tgt_x[k*blockDim.y + threadIdx.x];
+            float sy = s_tgt_y[k*blockDim.y + threadIdx.x];
+            float sz = s_tgt_z[k*blockDim.y + threadIdx.x];
 
-            a00+=rx*sx; a01+=rx*sy; a02+=rx*sz;
-            a10+=ry*sx; a11+=ry*sy; a12+=ry*sz;
-            a20+=rz*sx; a21+=rz*sy; a22+=rz*sz;
+            a00 += rx*sx; a01 += rx*sy; a02 += rx*sz;
+            a10 += ry*sx; a11 += ry*sy; a12 += ry*sz;
+            a20 += rz*sx; a21 += rz*sy; a22 += rz*sz;
         }
 
         __syncthreads();
     }
 
-    // Compute RMSD using Kabsch eigenvalues
+    // covariance matrix M = A^T * A
     float m00=a00*a00+a10*a10+a20*a20;
     float m01=a00*a01+a10*a11+a20*a21;
     float m02=a00*a02+a10*a12+a20*a22;
@@ -179,10 +179,10 @@ void RMSD(
     float lambda[3];
     compute_eigenvalues_symmetric_3x3(m00,m01,m02,m11,m12,m22,lambda);
 
-    float sigma_sum = sqrtf(fmaxf(lambda[0],0.f))
-                    + sqrtf(fmaxf(lambda[1],0.f))
-                    + sqrtf(fmaxf(lambda[2],0.f));
+    float sigma_sum = sqrtf(fmaxf(lambda[0],0.f)) +
+                      sqrtf(fmaxf(lambda[1],0.f)) +
+                      sqrtf(fmaxf(lambda[2],0.f));
 
     float rmsd2 = (G_ref[r] + G_tgt[t] - 2.f*sigma_sum)/N_atoms;
-    rmsd[r*N_tgt+t] = sqrtf(fmaxf(rmsd2,0.f));
+    rmsd[r*N_tgt + t] = sqrtf(fmaxf(rmsd2,0.f));
 }
