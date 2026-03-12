@@ -105,13 +105,15 @@ void RMSD(const float* refs,
     extern __shared__ float smem[];
     const int TILE = blockDim.x;  // number of atoms per tile
 
+    // Ref data: layout [atom_in_tile][ref_lane]  -> size TILE * blockDim.y
+    // Tgt data: layout [atom_in_tile][tgt_lane]  -> size TILE * blockDim.x
     float* s_ref_x = smem;
     float* s_ref_y = s_ref_x + TILE * blockDim.y;
     float* s_ref_z = s_ref_y + TILE * blockDim.y;
 
     float* s_tgt_x = s_ref_z + TILE * blockDim.y;
-    float* s_tgt_y = s_tgt_x + TILE * blockDim.y;
-    float* s_tgt_z = s_tgt_y + TILE * blockDim.y;
+    float* s_tgt_y = s_tgt_x + TILE * blockDim.x;
+    float* s_tgt_z = s_tgt_y + TILE * blockDim.x;
 
     int r = blockIdx.y * blockDim.y + threadIdx.y;
     int t = blockIdx.x * blockDim.x + threadIdx.x;
@@ -132,18 +134,25 @@ void RMSD(const float* refs,
 
     for(int start=0; start<N_atoms; start+=TILE)
     {
-        int idx = start + threadIdx.x;
+        int atom_idx = start + threadIdx.x;
 
-        // load reference atoms into shared memory
-        if(idx < N_atoms)
+        // Each thread loads one ref atom (for its ref lane = threadIdx.y)
+        // and one tgt atom (for its tgt lane = threadIdx.x)
+        if(atom_idx < N_atoms)
         {
-            s_ref_x[threadIdx.x*blockDim.y + threadIdx.y] = refs[0*N_atoms*N_ref + idx*N_ref + r] - rcx;
-            s_ref_y[threadIdx.x*blockDim.y + threadIdx.y] = refs[1*N_atoms*N_ref + idx*N_ref + r] - rcy;
-            s_ref_z[threadIdx.x*blockDim.y + threadIdx.y] = refs[2*N_atoms*N_ref + idx*N_ref + r] - rcz;
+            // Ref: atom threadIdx.x, ref lane threadIdx.y
+            s_ref_x[threadIdx.x*blockDim.y + threadIdx.y] = refs[0*N_atoms*N_ref + atom_idx*N_ref + r] - rcx;
+            s_ref_y[threadIdx.x*blockDim.y + threadIdx.y] = refs[1*N_atoms*N_ref + atom_idx*N_ref + r] - rcy;
+            s_ref_z[threadIdx.x*blockDim.y + threadIdx.y] = refs[2*N_atoms*N_ref + atom_idx*N_ref + r] - rcz;
 
-            s_tgt_x[threadIdx.x*blockDim.y + threadIdx.y] = tgts[0*N_atoms*N_tgt + idx*N_tgt + t] - scx;
-            s_tgt_y[threadIdx.x*blockDim.y + threadIdx.y] = tgts[1*N_atoms*N_tgt + idx*N_tgt + t] - scy;
-            s_tgt_z[threadIdx.x*blockDim.y + threadIdx.y] = tgts[2*N_atoms*N_tgt + idx*N_tgt + t] - scz;
+            // Tgt: atom threadIdx.x, tgt lane threadIdx.x
+            // Use threadIdx.y == 0 to avoid multiple writes to same cell
+            if(threadIdx.y == 0)
+            {
+                s_tgt_x[threadIdx.x*blockDim.x + threadIdx.x] = tgts[0*N_atoms*N_tgt + atom_idx*N_tgt + t] - scx;
+                s_tgt_y[threadIdx.x*blockDim.x + threadIdx.x] = tgts[1*N_atoms*N_tgt + atom_idx*N_tgt + t] - scy;
+                s_tgt_z[threadIdx.x*blockDim.x + threadIdx.x] = tgts[2*N_atoms*N_tgt + atom_idx*N_tgt + t] - scz;
+            }
         }
 
         __syncthreads();
@@ -152,13 +161,15 @@ void RMSD(const float* refs,
 
         for(int k=0;k<tile_end;k++)
         {
+            // ref data: atom k, ref lane threadIdx.y
             float rx = s_ref_x[k*blockDim.y + threadIdx.y];
             float ry = s_ref_y[k*blockDim.y + threadIdx.y];
             float rz = s_ref_z[k*blockDim.y + threadIdx.y];
 
-            float sx = s_tgt_x[k*blockDim.y + threadIdx.x];
-            float sy = s_tgt_y[k*blockDim.y + threadIdx.x];
-            float sz = s_tgt_z[k*blockDim.y + threadIdx.x];
+            // tgt data: atom k, tgt lane threadIdx.x
+            float sx = s_tgt_x[k*blockDim.x + threadIdx.x];
+            float sy = s_tgt_y[k*blockDim.x + threadIdx.x];
+            float sz = s_tgt_z[k*blockDim.x + threadIdx.x];
 
             a00 += rx*sx; a01 += rx*sy; a02 += rx*sz;
             a10 += ry*sx; a11 += ry*sy; a12 += ry*sz;
