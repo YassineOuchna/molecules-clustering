@@ -93,7 +93,7 @@ int main(int argc, char** args)
     CUDA_CHECK(cudaMalloc(&d_cz_cache, cache_slots * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_G_cache,  cache_slots * sizeof(float)));
 
-    dim3 threads(32, 8);
+    dim3 threads(64, 16);
     size_t total_centroid_frames = 0;
     size_t total_rmsd_pairs      = 0;
 
