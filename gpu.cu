@@ -21,7 +21,7 @@ void compute_eigenvalues_symmetric_3x3(float m00, float m01, float m02,
 
     float p = sm00*sm00 + sm11*sm11 + sm22*sm22
             + 2.0f * (m01*m01 + m02*m02 + m12*m12);
-    p = sqrtf(p / 6.0f);
+    p = __fsqrt_rn(p / 6.0f);
 
     float invp = (p > 1e-8f) ? (1.0f / p) : 0.0f;
 
@@ -193,10 +193,10 @@ void RMSD(const float* __restrict__ refs,
     float lambda[3];
     compute_eigenvalues_symmetric_3x3(m00, m01, m02, m11, m12, m22, lambda);
 
-    float sigma_sum = sqrtf(fmaxf(lambda[0], 0.f))
-                    + sqrtf(fmaxf(lambda[1], 0.f))
-                    + sqrtf(fmaxf(lambda[2], 0.f));
+    float sigma_sum = __fsqrt_rn(fmaxf(lambda[0], 0.f))
+                    + __fsqrt_rn(fmaxf(lambda[1], 0.f))
+                    + __fsqrt_rn(fmaxf(lambda[2], 0.f));
 
     float rmsd2 = (G_ref[r] + G_tgt[t] - 2.f * sigma_sum) / N_atoms;
-    rmsd[r * N_tgt + t] = sqrtf(fmaxf(rmsd2, 0.f));
+    rmsd[r * N_tgt + t] = __fsqrt_rn(fmaxf(rmsd2, 0.f));
 }
