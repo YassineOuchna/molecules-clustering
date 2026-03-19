@@ -117,9 +117,6 @@ int main(int argc, char** args)
         size_t stop_row  = std::min(start_row + NB_FRAMES_PER_CHUNK, N_frames);
         size_t nb_ref    = stop_row - start_row;
 
-        std::cout << "Processing row chunk " << row + 1 << "/" << NB_ROW_ITERATIONS
-                  << " (" << nb_ref << " frames)\n";
-
         // extractSnapshotsFastInPlace uses exclusive [start, end) convention.
         file.extractSnapshotsFastInPlace(start_row, stop_row, all_data, references_coordinates);
         CUDA_CHECK(cudaMemcpy(d_references, references_coordinates.data(),
