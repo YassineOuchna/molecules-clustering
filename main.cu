@@ -277,6 +277,13 @@ int main(int argc, char** args)
     std::cout << "Improvement : " << ((random_db - db_index) / random_db) * 100.0 << "%\n";
 
     saveClusters(clusters, N_frames, centroids, K);
+    // Export first row: RMSD(0, j) for j = 1..999
+    std::ofstream out("output/rmsd_row0.txt");
+    for (size_t j = 1; j < 1000; j++) {
+        size_t idx = j - 1;  // simplified from: 0*N - 0*(0+1)/2 + (j - 0 - 1)
+        out << j << " " << rmsdUpperTriangle[idx] << "\n";
+    }
+    out.close();
 
     // -----------------------------------------------------------------------
     // Cleanup
