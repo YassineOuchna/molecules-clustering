@@ -34,7 +34,7 @@ int main(int argc, char** args)
 
     timer.start("1. Loading .bin");
     FileUtils file(args[1]);
-    size_t N_frames = 90000;
+    size_t N_frames = 10000;
     size_t N_atoms  = file.getN_atoms();
     size_t N_dims   = file.getN_dims();
 
@@ -49,7 +49,7 @@ int main(int argc, char** args)
     // -----------------------------------------------------------------------
     // Chunk sizing
     // -----------------------------------------------------------------------
-    const size_t MAX_DATA_CHUNK_SIZE   = 500;
+    const size_t MAX_DATA_CHUNK_SIZE   = 12500;
     const size_t NB_FRAMES_PER_CHUNK   = get_chunk_frame_nb(MAX_DATA_CHUNK_SIZE, N_atoms, N_dims);
     const size_t NB_ROW_ITERATIONS     = (size_t)std::ceil((double)N_frames / NB_FRAMES_PER_CHUNK);
 
@@ -93,7 +93,7 @@ int main(int argc, char** args)
     CUDA_CHECK(cudaMalloc(&d_cz_cache, cache_slots * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_G_cache,  cache_slots * sizeof(float)));
 
-    dim3 threads(64, 16);
+    dim3 threads(64, 8);
     size_t total_centroid_frames = 0;
     size_t total_rmsd_pairs      = 0;
 

@@ -238,8 +238,8 @@ int main(int argc, char *argv[])
 
         for (auto &subdir : subdirs)
         {
-            fs::path pdb_file = subdir / "minimal.pdb";
-            fs::path xtc_file = subdir / "minimal.xtc";
+            fs::path pdb_file = subdir / "full.pdb";
+            fs::path xtc_file = subdir / "full.xtc";
 
             if (!fs::exists(pdb_file) || !fs::exists(xtc_file))
             {
