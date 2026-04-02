@@ -200,7 +200,7 @@ int main(int argc, char *argv[])
 
         // Output filename reflects extraction mode
         std::string output_file = ligand_only
-            ? "output/snapshots_coords_lig_2.bin"
+            ? "output/snapshots_coords_lig.bin"
             : "output/snapshots_coords_all_2.bin";
 
         fs::create_directories(fs::path(output_file).parent_path());
@@ -238,8 +238,8 @@ int main(int argc, char *argv[])
 
         for (auto &subdir : subdirs)
         {
-            fs::path pdb_file = subdir / "full.pdb";
-            fs::path xtc_file = subdir / "full.xtc";
+            fs::path pdb_file = subdir / "minimal.pdb";
+            fs::path xtc_file = subdir / "minimal.xtc";
 
             if (!fs::exists(pdb_file) || !fs::exists(xtc_file))
             {
