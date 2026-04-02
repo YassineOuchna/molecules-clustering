@@ -6,8 +6,7 @@
 #include <cstdlib>
 
 // ---------------------------------------------------------------------------
-// Unified CUDA error-checking macro (used by both host code and gpu.cu).
-// Prints file, line, and the CUDA error string, then exits.
+// Unified CUDA error-checking macro
 // ---------------------------------------------------------------------------
 #define CUDA_CHECK(call)                                                        \
     do {                                                                        \
@@ -19,30 +18,25 @@
         }                                                                       \
     } while (0)
 
-
 // ---------------------------------------------------------------------------
-// GPU Helper function to compute equivalent index for an upper triangular matrix
+// GPU helper — packed upper-triangle index lookup
 // ---------------------------------------------------------------------------
-inline __device__ float getRMSD_GPU(int i, int j, const float* rmsdPacked, int N_snapshots) {
+inline __device__ float getRMSD_GPU(int i, int j,
+                                    const float* rmsdPacked,
+                                    int N_snapshots)
+{
     if (i == j) return 0.0f;
-    if (i > j) {
-        int tmp = i;
-        i = j;
-        j = tmp;
-    }
+    if (i > j) { int tmp = i; i = j; j = tmp; }
     size_t idx = (size_t)i * N_snapshots
-           - ((size_t)i * ((size_t)i + 1)) / 2
-           + (j - i - 1);
+               - ((size_t)i * ((size_t)i + 1)) / 2
+               + (j - i - 1);
     return rmsdPacked[idx];
 }
 
-    // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Kernel declarations
 // ---------------------------------------------------------------------------
 
-// Computes per-frame centroid (cx, cy, cz) and the inner-product G = Σ|r-c|²
-// for N_frames frames, each with N_atoms atoms.
-// Data layout: coords[dim * N_atoms * N_frames + atom * N_frames + frame]
 __global__
 void computeCentroidsG(const float* __restrict__ coords,
                        size_t N_atoms,
@@ -52,8 +46,6 @@ void computeCentroidsG(const float* __restrict__ coords,
                        float* __restrict__ centroids_z,
                        float* __restrict__ G);
 
-// Computes the N_ref × N_tgt RMSD matrix using the Kabsch/QCP inner-product
-// formula.  Shared memory size must be 3 * blockDim.x * blockDim.y * sizeof(float).
 __global__
 void RMSD(const float* __restrict__ refs,
           const float* __restrict__ tgts,
@@ -71,39 +63,33 @@ void RMSD(const float* __restrict__ refs,
           float* __restrict__ rmsd);
 
 __global__
-void AssignClusters(
-    int N_frames,
-    int K,
-    const float* __restrict__ rmsd,
-    int* centroidsGPU,
-    int* clustersGPU,
-    float* frameCosts
-);
-
-__global__
-void ComputeMedoidCosts(
-    int N_frames,
-    const float* __restrict__ rmsd,
-    int* clustersGPU,
-    float* frameCostsGPU
-);
-
-__global__
-void UpdateMedoids(
-    int N_frames,
-    int* centroidsGPU,
-    int* clustersGPU,
-    float* frameCosts
-);
-
-__global__
 void RMSD_diagonal(const float* __restrict__ refs,
-          size_t N_atoms,
-          size_t N_ref,
-          const float* __restrict__ cx_ref,
-          const float* __restrict__ cy_ref,
-          const float* __restrict__ cz_ref,
-          const float* __restrict__ G_ref,
-          float* __restrict__ rmsd);
+                   size_t N_atoms,
+                   size_t N_ref,
+                   const float* __restrict__ cx_ref,
+                   const float* __restrict__ cy_ref,
+                   const float* __restrict__ cz_ref,
+                   const float* __restrict__ G_ref,
+                   float* __restrict__ rmsd);
+
+__global__
+void AssignClusters(int N_frames,
+                    int K,
+                    const float* __restrict__ rmsd,
+                    int* centroidsGPU,
+                    int* clustersGPU,
+                    float* frameCosts);
+
+__global__
+void ComputeMedoidCosts(int N_frames,
+                        const float* __restrict__ rmsd,
+                        int* clustersGPU,
+                        float* frameCosts);
+
+__global__
+void UpdateMedoids(int N_frames,
+                   int* centroidsGPU,
+                   int* clustersGPU,
+                   float* frameCosts);
 
 #endif // GPU_CUH

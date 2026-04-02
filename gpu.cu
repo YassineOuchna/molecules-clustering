@@ -86,20 +86,7 @@ void computeCentroidsG(const float* __restrict__ coords,
 }
 
 // =============================================================================
-// RMSD kernel
-//
-// Grid:  blocks = ( ceil(N_tgt/32), ceil(N_ref/8) )
-// Block: threads = (32, 8)  → tx indexes target frames, ty indexes ref frames
-//
-// Shared memory layout (allocated by caller as 3*TILE*blockDim.y floats):
-//   TILE = blockDim.x = 32  (atoms tiled along tx dimension)
-//   s_ref_x[atom_in_tile * blockDim.y + ty]  — ref coords after centroid sub
-//   s_ref_y[...]
-//   s_ref_z[...]
-//
-// Each thread (tx, ty) accumulates the 3×3 cross-covariance matrix A between
-// ref frame r=blockIdx.y*8+ty and tgt frame t=blockIdx.x*32+tx, then applies
-// the QCP formula:  RMSD² = (G_ref + G_tgt - 2*Σ√λᵢ) / N_atoms
+// RMSD kernel  (off-diagonal tiles)
 // =============================================================================
 __global__
 void RMSD(const float* __restrict__ refs,
@@ -119,17 +106,14 @@ void RMSD(const float* __restrict__ refs,
 {
     extern __shared__ float smem[];
 
-    // TILE must equal blockDim.x so that each tx-lane loads exactly one atom
-    // per tile into shared memory.  The caller allocates smem accordingly:
-    //   smem_bytes = 3 * blockDim.x * blockDim.y * sizeof(float)
-    const int TILE = blockDim.x;   // = 32
+    const int TILE = blockDim.x;
 
     float* s_ref_x = smem;
     float* s_ref_y = s_ref_x + TILE * blockDim.y;
     float* s_ref_z = s_ref_y + TILE * blockDim.y;
 
-    int r = blockIdx.y * blockDim.y + threadIdx.y;   // ref frame index
-    int t = blockIdx.x * blockDim.x + threadIdx.x;   // tgt frame index
+    int r = blockIdx.y * blockDim.y + threadIdx.y;
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (r >= N_ref || t >= N_tgt) return;
 
@@ -144,8 +128,6 @@ void RMSD(const float* __restrict__ refs,
     {
         int atom_idx = start + threadIdx.x;
 
-        // Thread (tx, ty) loads ref atom (start+tx) for ref frame r(ty)
-        // into shared memory slot [tx * blockDim.y + ty].
         if (atom_idx < N_atoms)
         {
             s_ref_x[threadIdx.x * blockDim.y + threadIdx.y] =
@@ -161,14 +143,10 @@ void RMSD(const float* __restrict__ refs,
         int tile_end = min(TILE, (int)(N_atoms - start));
         for (int k = 0; k < tile_end; ++k)
         {
-            // Ref atom (start+k) for this thread's ref frame: from shared mem.
             float rx = s_ref_x[k * blockDim.y + threadIdx.y];
             float ry = s_ref_y[k * blockDim.y + threadIdx.y];
             float rz = s_ref_z[k * blockDim.y + threadIdx.y];
 
-            // Tgt atom (start+k) for this thread's tgt frame: global read.
-            // All blockDim.y threads with the same tx share the same address
-            // and hit L1 cache.
             int atom_k = start + k;
             float sx = tgts[0 * N_atoms * N_tgt + atom_k * N_tgt + t] - scx;
             float sy = tgts[1 * N_atoms * N_tgt + atom_k * N_tgt + t] - scy;
@@ -182,7 +160,6 @@ void RMSD(const float* __restrict__ refs,
         __syncthreads();
     }
 
-    // Symmetric matrix M = Aᵀ·A  (3×3, upper triangle sufficient)
     float m00 = a00*a00 + a10*a10 + a20*a20;
     float m01 = a00*a01 + a10*a11 + a20*a21;
     float m02 = a00*a02 + a10*a12 + a20*a22;
@@ -201,39 +178,33 @@ void RMSD(const float* __restrict__ refs,
     rmsd[r * N_tgt + t] = __fsqrt_rn(fmaxf(rmsd2, 0.f));
 }
 
+// =============================================================================
+// RMSD_diagonal kernel  (diagonal tiles — same chunk for ref and tgt)
+// =============================================================================
 __global__
 void RMSD_diagonal(const float* __restrict__ refs,
-          size_t N_atoms,
-          size_t N_ref,
-          const float* __restrict__ cx_ref,
-          const float* __restrict__ cy_ref,
-          const float* __restrict__ cz_ref,
-          const float* __restrict__ G_ref,
-          float* __restrict__ rmsd)
+                   size_t N_atoms,
+                   size_t N_ref,
+                   const float* __restrict__ cx_ref,
+                   const float* __restrict__ cy_ref,
+                   const float* __restrict__ cz_ref,
+                   const float* __restrict__ G_ref,
+                   float* __restrict__ rmsd)
 {
     extern __shared__ float smem[];
 
-    // TILE must equal blockDim.x so that each tx-lane loads exactly one atom
-    // per tile into shared memory.  The caller allocates smem accordingly:
-    //   smem_bytes = 3 * blockDim.x * blockDim.y * sizeof(float)
-    const int TILE = blockDim.x;   // = 32
+    const int TILE   = blockDim.x;
     const int TILE_y = blockDim.y;
 
     float* s_ref_x = smem;
     float* s_ref_y = s_ref_x + TILE * blockDim.y;
     float* s_ref_z = s_ref_y + TILE * blockDim.y;
 
-    int r = blockIdx.y * blockDim.y + threadIdx.y;   // ref frame index
-    int t = blockIdx.x * blockDim.x + threadIdx.x;   // tgt frame index
+    int r = blockIdx.y * blockDim.y + threadIdx.y;
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (r >= N_ref || t >= N_ref) return;
     if (TILE * (blockIdx.x + 1) < TILE_y * blockIdx.y) return;
-
-
-    // if (t_max < r_min) return;
-
-    // bool compute = (t >= r);
-    // compute = compute && (!(r >= N_ref || t >= N_ref));
 
     float rcx = cx_ref[r],  rcy = cy_ref[r],  rcz = cz_ref[r];
     float scx = cx_ref[t],  scy = cy_ref[t],  scz = cz_ref[t];
@@ -246,8 +217,6 @@ void RMSD_diagonal(const float* __restrict__ refs,
     {
         int atom_idx = start + threadIdx.x;
 
-        // Thread (tx, ty) loads ref atom (start+tx) for ref frame r(ty)
-        // into shared memory slot [tx * blockDim.y + ty].
         if (atom_idx < N_atoms)
         {
             s_ref_x[threadIdx.x * blockDim.y + threadIdx.y] =
@@ -263,14 +232,10 @@ void RMSD_diagonal(const float* __restrict__ refs,
         int tile_end = min(TILE, (int)(N_atoms - start));
         for (int k = 0; k < tile_end; ++k)
         {
-            // Ref atom (start+k) for this thread's ref frame: from shared mem.
             float rx = s_ref_x[k * blockDim.y + threadIdx.y];
             float ry = s_ref_y[k * blockDim.y + threadIdx.y];
             float rz = s_ref_z[k * blockDim.y + threadIdx.y];
 
-            // Tgt atom (start+k) for this thread's tgt frame: global read.
-            // All blockDim.y threads with the same tx share the same address
-            // and hit L1 cache.
             int atom_k = start + k;
             float sx = refs[0 * N_atoms * N_ref + atom_k * N_ref + t] - scx;
             float sy = refs[1 * N_atoms * N_ref + atom_k * N_ref + t] - scy;
@@ -284,24 +249,27 @@ void RMSD_diagonal(const float* __restrict__ refs,
         __syncthreads();
     }
 
-    // Symmetric matrix M = Aᵀ·A  (3×3, upper triangle sufficient)
     float m00 = a00*a00 + a10*a10 + a20*a20;
     float m01 = a00*a01 + a10*a11 + a20*a21;
     float m02 = a00*a02 + a10*a12 + a20*a22;
     float m11 = a01*a01 + a11*a11 + a21*a21;
     float m12 = a01*a02 + a11*a12 + a21*a22;
     float m22 = a02*a02 + a12*a12 + a22*a22;
+
     float lambda[3];
     compute_eigenvalues_symmetric_3x3(m00, m01, m02, m11, m12, m22, lambda);
+
     float sigma_sum = sqrtf(fmaxf(lambda[0], 0.f))
                     + sqrtf(fmaxf(lambda[1], 0.f))
                     + sqrtf(fmaxf(lambda[2], 0.f));
+
     float rmsd2 = (G_ref[r] + G_ref[t] - 2.f * sigma_sum) / N_atoms;
-    rmsd2 = sqrtf(fmaxf(rmsd2, 0.f));
-    // rmsd[r * N_ref + t] = sqrtf(fmaxf(rmsd2, 0.f));
-    rmsd[r * N_ref + t] = rmsd2;
+    rmsd[r * N_ref + t] = sqrtf(fmaxf(rmsd2, 0.f));
 }
 
+// =============================================================================
+// Clustering kernels
+// =============================================================================
 __global__
 void AssignClusters(
     int N_frames,
@@ -309,25 +277,18 @@ void AssignClusters(
     const float* __restrict__ rmsd,
     int* centroidsGPU,
     int* clustersGPU,
-    float* frameCosts
-)
+    float* frameCosts)
 {
-    // Assigning each frame to a cluster
     int frame_id = blockDim.x * blockIdx.x + threadIdx.x;
+    if (frame_id >= N_frames) return;
 
-    if (frame_id >= N_frames) {
-        return;
-    }
-
-    int best_cluster = 0;
-    float best_d = HUGE_VALF;
-    for (int k = 0; k<K; k++) {
-        // size_t distance_idx = (size_t) N_frames * centroidsGPU[k] + frame_id;
-        // float curr_distance = rmsd[distance_idx];
+    int   best_cluster = 0;
+    float best_d       = HUGE_VALF;
+    for (int k = 0; k < K; k++) {
         float curr_distance = getRMSD_GPU(centroidsGPU[k], frame_id, rmsd, N_frames);
         if (curr_distance < best_d) {
             best_cluster = k;
-            best_d = curr_distance;
+            best_d       = curr_distance;
         }
     }
     clustersGPU[frame_id] = best_cluster;
@@ -338,79 +299,60 @@ void ComputeMedoidCosts(
     int N_frames,
     const float* __restrict__ rmsd,
     int* clustersGPU,
-    float* frameCosts
-)
+    float* frameCosts)
 {
     int frame_id = blockDim.x * blockIdx.x + threadIdx.x;
+    if (frame_id >= N_frames) return;
 
-    if (frame_id >= N_frames) {
-        return;
-    }
-
-    int assigned_cluster = clustersGPU[frame_id];
-
-    float cost = 0;
-    for (int j = 0; j<N_frames; j++) {
-        if (assigned_cluster == clustersGPU[j]) {
-            // size_t idx = (size_t) N_frames * j + frame_id;
-            // cost += rmsd[idx];
-            // losing some coalescence since using triangular matrix
+    int   assigned_cluster = clustersGPU[frame_id];
+    float cost             = 0.f;
+    for (int j = 0; j < N_frames; j++) {
+        if (assigned_cluster == clustersGPU[j])
             cost += getRMSD_GPU(j, frame_id, rmsd, N_frames);
-        }
     }
     frameCosts[frame_id] = cost;
 }
-
 
 __global__
 void UpdateMedoids(
     int N_frames,
     int* centroidsGPU,
     int* clustersGPU,
-    float* frameCosts
-)
+    float* frameCosts)
 {
-    int k = blockIdx.x;
+    int k   = blockIdx.x;
     int tid = threadIdx.x;
 
-    // Shared mem : [costs | indices]
     extern __shared__ float smem[];
     int* s_indices = (int*)&smem[blockDim.x];
 
-
-    // Calcul des minima locaux pour chaque thread
     float local_min_cost = HUGE_VALF;
-    int local_min_idx = -1;
+    int   local_min_idx  = -1;
 
     for (int i = tid; i < N_frames; i += blockDim.x) {
         if (clustersGPU[i] == k) {
-            // parcours divergent coalescence pas sûre
             float cost = frameCosts[i];
             if (cost < local_min_cost) {
                 local_min_cost = cost;
-                local_min_idx = i;
+                local_min_idx  = i;
             }
         }
     }
 
-    // Store to shared memory
-    smem[tid] = local_min_cost;
+    smem[tid]      = local_min_cost;
     s_indices[tid] = local_min_idx;
     __syncthreads();
 
-    // Reduction in shared memory
     for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
         if (tid < stride) {
             if (smem[tid + stride] < smem[tid]) {
-                smem[tid] = smem[tid + stride];
+                smem[tid]      = smem[tid + stride];
                 s_indices[tid] = s_indices[tid + stride];
             }
         }
         __syncthreads();
     }
 
-    // Thread 0 updates the centroid
-    if (tid == 0) {
+    if (tid == 0)
         centroidsGPU[k] = s_indices[0];
-    }
 }
